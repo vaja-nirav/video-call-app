@@ -306,6 +306,9 @@ const MeetingRoom = () => {
       roomId,
       userId: null,
       name: displayName.trim(),
+      isMuted: !micOn,
+      isCameraOff: !cameraOn,
+      isHandRaised: handRaised,
     });
 
     // Listen for guest join requests (knocking) - only host receives this
@@ -324,9 +327,9 @@ const MeetingRoom = () => {
         socketId: peer.socketId,
         name: peer.name,
         stream: null,
-        isMuted: false,
-        isCameraOff: false,
-        isHandRaised: false,
+        isMuted: peer.isMuted ?? false,
+        isCameraOff: peer.isCameraOff ?? false,
+        isHandRaised: peer.isHandRaised ?? false,
       })));
 
       peersList.forEach((peer) => {
@@ -339,12 +342,12 @@ const MeetingRoom = () => {
     });
 
     // Event: New user joined
-    socket.on('user-joined', ({ socketId, name }) => {
+    socket.on('user-joined', ({ socketId, name, isMuted, isCameraOff, isHandRaised }) => {
       console.log(`User joined: ${name} (${socketId})`);
       // Add them to the peers UI immediately
       setPeers((prev) => {
         if (prev.find((p) => p.socketId === socketId)) return prev;
-        return [...prev, { socketId, name, stream: null, isMuted: false, isCameraOff: false, isHandRaised: false }];
+        return [...prev, { socketId, name, stream: null, isMuted: isMuted ?? false, isCameraOff: isCameraOff ?? false, isHandRaised: isHandRaised ?? false }];
       });
     });
 
@@ -691,7 +694,15 @@ const MeetingRoom = () => {
           <div className="flex-1 w-full max-w-md bg-dark-card border border-dark-border rounded-2xl overflow-hidden aspect-video shadow-2xl relative flex items-center justify-center">
             {cameraOn ? (
               <video
-                ref={localVideoRef}
+                ref={(el) => {
+                  localVideoRef.current = el;
+                  if (el) {
+                    const activeStream = isScreenSharing ? screenStreamRef.current : localStreamRef.current;
+                    if (activeStream && el.srcObject !== activeStream) {
+                      el.srcObject = activeStream;
+                    }
+                  }
+                }}
                 autoPlay
                 playsInline
                 muted
@@ -900,7 +911,15 @@ const MeetingRoom = () => {
             <div className={`aspect-video bg-dark-card border rounded-2xl overflow-hidden shadow-xl relative flex items-center justify-center transition-all duration-300 ${activeSpeakers.has('local') ? 'border-green-500 ring-4 ring-green-500/40 shadow-[0_0_20px_rgba(34,197,94,0.4)] scale-[1.02]' : 'border-dark-border'}`}>
               {cameraOn ? (
                 <video
-                  ref={localVideoRef}
+                  ref={(el) => {
+                    localVideoRef.current = el;
+                    if (el) {
+                      const activeStream = isScreenSharing ? screenStreamRef.current : localStreamRef.current;
+                      if (activeStream && el.srcObject !== activeStream) {
+                        el.srcObject = activeStream;
+                      }
+                    }
+                  }}
                   autoPlay
                   playsInline
                   muted

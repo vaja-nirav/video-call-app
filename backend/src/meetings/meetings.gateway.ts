@@ -20,8 +20,19 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
   server: Server;
 
   // In-memory registry mapping Socket ID to participant session details
-  // Format: socket.id => { roomId, userId, name, participantId }
-  private socketRegistry = new Map<string, { roomId: string; userId: number | null; name: string; participantId: number }>();
+  // Format: socket.id => { roomId, userId, name, participantId, isMuted, isCameraOff, isHandRaised }
+  private socketRegistry = new Map<
+    string,
+    {
+      roomId: string;
+      userId: number | null;
+      name: string;
+      participantId: number;
+      isMuted: boolean;
+      isCameraOff: boolean;
+      isHandRaised: boolean;
+    }
+  >();
 
   constructor(private meetingsService: MeetingsService) {}
 
@@ -59,9 +70,9 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
   @SubscribeMessage('join-room')
   async handleJoinRoom(
     @ConnectedSocket() client: Socket,
-    @MessageBody() payload: { roomId: string; userId: number | null; name: string },
+    @MessageBody() payload: { roomId: string; userId: number | null; name: string; isMuted?: boolean; isCameraOff?: boolean; isHandRaised?: boolean },
   ) {
-    const { roomId, userId, name } = payload;
+    const { roomId, userId, name, isMuted = false, isCameraOff = false, isHandRaised = false } = payload;
 
     // Fetch existing room peers before joining this socket to the room
     const peersInRoom = Array.from(this.socketRegistry.entries())
@@ -70,6 +81,9 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
         socketId,
         userId: data.userId,
         name: data.name,
+        isMuted: data.isMuted,
+        isCameraOff: data.isCameraOff,
+        isHandRaised: data.isHandRaised,
       }));
 
     // Register user in the database
@@ -84,7 +98,15 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
     }
 
     // Register socket details in-memory
-    this.socketRegistry.set(client.id, { roomId, userId, name, participantId });
+    this.socketRegistry.set(client.id, {
+      roomId,
+      userId,
+      name,
+      participantId,
+      isMuted,
+      isCameraOff,
+      isHandRaised,
+    });
 
     // Join the client to the socket.io room
     client.join(roomId);
@@ -97,6 +119,9 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
       socketId: client.id,
       userId,
       name,
+      isMuted,
+      isCameraOff,
+      isHandRaised,
     });
   }
 
@@ -144,6 +169,8 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
   ) {
     const session = this.socketRegistry.get(client.id);
     if (session) {
+      session.isMuted = payload.isMuted; // Update in-memory state
+
       client.to(session.roomId).emit('peer-toggle-mute', {
         socketId: client.id,
         isMuted: payload.isMuted,
@@ -170,6 +197,8 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
   ) {
     const session = this.socketRegistry.get(client.id);
     if (session) {
+      session.isCameraOff = payload.isCameraOff; // Update in-memory state
+
       client.to(session.roomId).emit('peer-toggle-camera', {
         socketId: client.id,
         isCameraOff: payload.isCameraOff,
@@ -196,6 +225,8 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
   ) {
     const session = this.socketRegistry.get(client.id);
     if (session) {
+      session.isHandRaised = payload.isHandRaised; // Update in-memory state
+
       client.to(session.roomId).emit('peer-raise-hand', {
         socketId: client.id,
         isHandRaised: payload.isHandRaised,
