@@ -1,0 +1,73 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+model User {
+  id           Int           @id @default(autoincrement())
+  name         String
+  email        String        @unique
+  password     String
+  refreshToken String?       @db.VarChar(500)
+  createdAt    DateTime      @default(now())
+  
+  // Relations
+  hostedMeetings Meeting[]     @relation("MeetingHost")
+  participants   Participant[]
+  messages       Message[]
+  callLogs       CallLog[]
+}
+
+model Meeting {
+  id        String    @id @default(uuid())
+  title     String?   @db.VarChar(100)
+  hostId    Int
+  host      User      @relation("MeetingHost", fields: [hostId], references: [id], onDelete: Cascade)
+  createdAt DateTime  @default(now())
+  endedAt   DateTime?
+  
+  // Relations
+  participants Participant[]
+  messages     Message[]
+  callLogs     CallLog[]
+}
+
+model Participant {
+  id           Int       @id @default(autoincrement())
+  meetingId    String
+  meeting      Meeting   @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  userId       Int?      // Optional to support guest participants
+  user         User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  guestName    String?   @db.VarChar(100)
+  role         String    @default("PARTICIPANT") // HOST, PARTICIPANT
+  isMuted      Boolean   @default(false)
+  isCameraOff  Boolean   @default(false)
+  isHandRaised Boolean   @default(false)
+  joinedAt     DateTime  @default(now())
+  leftAt       DateTime?
+}
+
+model Message {
+  id        Int      @id @default(autoincrement())
+  meetingId String
+  meeting   Meeting  @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  userId    Int?      // Optional to support guest messages
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  senderName String   @db.VarChar(100)
+  content   String   @db.Text
+  createdAt DateTime @default(now())
+}
+
+model CallLog {
+  id        Int      @id @default(autoincrement())
+  meetingId String
+  meeting   Meeting  @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  userId    Int?      // Optional to log guest actions
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  action    String   @db.VarChar(50) // JOINED, LEFT, SCREEN_SHARE_START, etc.
+  details   String?  @db.VarChar(255)
+  timestamp DateTime @default(now())
+}
