@@ -9,6 +9,7 @@ export class UsersService {
     name: string;
     email: string;
     password: string;
+    googleId?: string;
   }) {
     return this.prisma.user.create({
       data,
@@ -32,6 +33,12 @@ export class UsersService {
     });
   }
 
+  async findByGoogleId(googleId: string) {
+    return this.prisma.user.findUnique({
+      where: { googleId },
+    });
+  }
+
   async findById(id: number) {
     return this.prisma.user.findUnique({
       where: { id },
@@ -48,6 +55,13 @@ export class UsersService {
     return this.prisma.user.update({
       where: { id },
       data: { refreshToken },
+    });
+  }
+
+  async linkGoogleAccount(id: number, googleId: string) {
+    return this.prisma.user.update({
+      where: { id },
+      data: { googleId },
     });
   }
 }

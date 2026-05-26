@@ -33,6 +33,22 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
       isHandRaised: boolean;
     }
   >();
+  
+  // Real-time active presence registry for online users & vertical scroll matchmaking
+  // Format: userId => { socketId, name, autoMatchEnabled, isBusy }
+  private activePresence = new Map<
+    number,
+    {
+      socketId: string;
+      name: string;
+      autoMatchEnabled: boolean;
+      isBusy: boolean;
+    }
+  >();
+
+  // Tracks matchmaking history of who met whom so they are not automatically matched again
+  // Format: userId => Set of userIds they have already matched with
+  private matchedHistory = new Map<number, Set<number>>();
 
   constructor(private meetingsService: MeetingsService) {}
 
@@ -42,6 +58,21 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
 
   async handleDisconnect(client: Socket) {
     console.log(`Socket Client Disconnected: ${client.id}`);
+
+    // Remove from active presence if this was a registered presence socket
+    let foundPresence = false;
+    for (const [userId, data] of this.activePresence.entries()) {
+      if (data.socketId === client.id) {
+        this.activePresence.delete(userId);
+        foundPresence = true;
+        console.log(`Presence removed for disconnected user: ${userId}`);
+        break;
+      }
+    }
+    if (foundPresence) {
+      this.broadcastOnlineUsers();
+    }
+
     const session = this.socketRegistry.get(client.id);
     
     if (session) {
@@ -314,5 +345,189 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
     
     // Send admission denied event to the guest
     this.server.to(requesterSocketId).emit('admission-denied');
+  }
+
+  // --- REAL-TIME PRESENCE & AUTOMATIC MATCHMAKING ENGINE ---
+
+  private broadcastOnlineUsers() {
+    const list = Array.from(this.activePresence.entries())
+      .filter(([_, data]) => !data.isBusy) // Only available users show up in list
+      .map(([userId, data]) => ({
+        userId,
+        name: data.name,
+        autoMatchEnabled: data.autoMatchEnabled,
+      }));
+
+    console.log(`Broadcasting online users list. Count: ${list.length}`);
+    this.server.emit('online-users-list', list);
+  }
+
+  private tryAutoMatch() {
+    // Find all users who are currently in the active presence registry
+    const freeUsers = Array.from(this.activePresence.entries())
+      .map(([userId, data]) => ({ userId, ...data }));
+
+    console.log(`AutoMatch Engine: active users count: ${freeUsers.length}`);
+
+    // Pair any user who has autoMatchEnabled: true (i.e. first-time registrations)
+    for (const userA of freeUsers) {
+      const dataA = this.activePresence.get(userA.userId);
+      if (dataA && dataA.autoMatchEnabled && !dataA.isBusy) {
+        
+        // Find ANY active online user who is:
+        // 1. Not userA
+        // 2. Not currently busy in a call
+        // 3. Has not matched with userA before during this server session
+        const partner = freeUsers.find((u) => {
+          if (u.userId === userA.userId || u.isBusy) return false;
+          const alreadyMatched = this.matchedHistory.get(userA.userId)?.has(u.userId) || false;
+          return !alreadyMatched;
+        });
+
+        if (partner) {
+          // Mark both users as busy in registry
+          const dataB = this.activePresence.get(partner.userId);
+          if (dataA) dataA.isBusy = true;
+          if (dataB) dataB.isBusy = true;
+
+          // Record match history for both users
+          if (!this.matchedHistory.has(userA.userId)) {
+            this.matchedHistory.set(userA.userId, new Set());
+          }
+          if (!this.matchedHistory.has(partner.userId)) {
+            this.matchedHistory.set(partner.userId, new Set());
+          }
+          this.matchedHistory.get(userA.userId)!.add(partner.userId);
+          this.matchedHistory.get(partner.userId)!.add(userA.userId);
+
+          // Unique match room code
+          const roomCode = `match-${userA.userId}-${partner.userId}`;
+          console.log(`AutoMatch Pairing (Registration Auto-Connect): ${userA.name} ↔ ${partner.name}. Room: ${roomCode}`);
+
+          // Emit redirection to both sockets
+          this.server.to(userA.socketId).emit('auto-match-redirect', { roomCode });
+          this.server.to(partner.socketId).emit('auto-match-redirect', { roomCode });
+        }
+      }
+    }
+
+    // Broadcast updated available lists
+    this.broadcastOnlineUsers();
+  }
+
+  @SubscribeMessage('register-presence')
+  handleRegisterPresence(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { userId: number; name: string; autoMatchEnabled: boolean },
+  ) {
+    const { userId, name, autoMatchEnabled } = payload;
+    console.log(`Presence registered: user ${userId} (${name}), autoMatch: ${autoMatchEnabled}`);
+
+    // Register presence (automatically resets isBusy to false when they return to dashboard)
+    this.activePresence.set(userId, {
+      socketId: client.id,
+      name,
+      autoMatchEnabled,
+      isBusy: false,
+    });
+
+    // Broadcast updated online list to everyone
+    this.broadcastOnlineUsers();
+
+    // Trigger auto match if enabled
+    if (autoMatchEnabled) {
+      this.tryAutoMatch();
+    }
+  }
+
+  @SubscribeMessage('call-user')
+  handleCallUser(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { targetUserId: number; roomCode: string },
+  ) {
+    const { targetUserId, roomCode } = payload;
+    const target = this.activePresence.get(targetUserId);
+    if (target) {
+      // Find caller name
+      let callerName = 'Stranger';
+      for (const [uid, data] of this.activePresence.entries()) {
+        if (data.socketId === client.id) {
+          callerName = data.name;
+          break;
+        }
+      }
+
+      this.server.to(target.socketId).emit('incoming-ring', {
+        callerSocketId: client.id,
+        callerName,
+        roomCode,
+      });
+    }
+  }
+
+  @SubscribeMessage('accept-call')
+  handleAcceptCall(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { callerSocketId: string; roomCode: string },
+  ) {
+    const { callerSocketId, roomCode } = payload;
+
+    // Set both users to busy
+    for (const [uid, data] of this.activePresence.entries()) {
+      if (data.socketId === client.id || data.socketId === callerSocketId) {
+        data.isBusy = true;
+      }
+    }
+    this.broadcastOnlineUsers();
+
+    this.server.to(client.id).emit('call-connected', { roomCode });
+    this.server.to(callerSocketId).emit('call-connected', { roomCode });
+  }
+
+  @SubscribeMessage('decline-call')
+  handleDeclineCall(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { callerSocketId: string },
+  ) {
+    this.server.to(payload.callerSocketId).emit('call-declined');
+  }
+
+  @SubscribeMessage('cancel-call')
+  handleCancelCall(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { targetUserId: number },
+  ) {
+    const target = this.activePresence.get(payload.targetUserId);
+    if (target) {
+      this.server.to(target.socketId).emit('call-cancelled');
+    }
+  }
+
+  @SubscribeMessage('send-direct-message')
+  handleSendDirectMessage(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { targetUserId: number; content: string },
+  ) {
+    const { targetUserId, content } = payload;
+    const target = this.activePresence.get(targetUserId);
+    if (target) {
+      // Find sender details
+      let senderUserId = 0;
+      let senderName = 'Stranger';
+      for (const [uid, data] of this.activePresence.entries()) {
+        if (data.socketId === client.id) {
+          senderUserId = uid;
+          senderName = data.name;
+          break;
+        }
+      }
+
+      this.server.to(target.socketId).emit('incoming-direct-message', {
+        senderUserId,
+        senderName,
+        content,
+        createdAt: new Date().toISOString(),
+      });
+    }
   }
 }

@@ -16,6 +16,7 @@ const iceConfiguration = {
 const MeetingRoom = () => {
   const { roomId } = useParams();
   const navigate = useNavigate();
+  const { user } = useSelector((state) => state.auth);
 
   // Custom display name for guest meetings
   const [displayName, setDisplayName] = useState(localStorage.getItem('meetsync_name') || '');
@@ -57,6 +58,7 @@ const MeetingRoom = () => {
   const screenStreamRef = useRef(null);
   const peerConnectionsRef = useRef(new Map()); // socketId => RTCPeerConnection
   const localVideoRef = useRef(null);
+  const joinedRef = useRef(false);
   const originalCameraStateRef = useRef(true); // Tracks camera status before screen sharing starts
 
   // Active Speaker States & Refs
@@ -152,6 +154,8 @@ const MeetingRoom = () => {
 
   // 1. Initial Local Camera Preview Setup (Lobby Phase)
   useEffect(() => {
+    let active = true;
+
     const setupLobby = async () => {
       let stream = null;
       let audioSupported = true;
@@ -172,6 +176,7 @@ const MeetingRoom = () => {
           },
         });
       } catch (err) {
+        if (!active) return;
         console.warn('PC lacks either a camera or mic. Attempting fallback modes...', err);
 
         // Fallback 1: Try Audio-Only (very common for desktop PCs with mic/headset but no webcam)
@@ -187,6 +192,7 @@ const MeetingRoom = () => {
           videoSupported = false;
           setCameraOn(false); // Dynamically toggle camera off in UI
         } catch (audioErr) {
+          if (!active) return;
           console.warn('Audio-only failed. Attempting Video-Only...', audioErr);
 
           // Fallback 2: Try Video-Only (webcam with no microphone)
@@ -202,12 +208,20 @@ const MeetingRoom = () => {
             audioSupported = false;
             setMicOn(false); // Dynamically mute in UI
           } catch (videoErr) {
+            if (!active) return;
             console.error('All media acquisition failed:', videoErr);
             audioSupported = false;
             videoSupported = false;
             alert('No camera or microphone detected. You will join the meeting as a viewer/chatter only!');
           }
         }
+      }
+
+      if (!active) {
+        if (stream) {
+          stream.getTracks().forEach((track) => track.stop());
+        }
+        return;
       }
 
       if (stream) {
@@ -231,11 +245,37 @@ const MeetingRoom = () => {
           });
           if (cleanup) speakerAnalyzersRef.current.set('local', cleanup);
         }
+
+        // ALWAYS bypass lobby preview page for both hosts and guests
+        if (roomId) {
+          let nameToUse = displayName;
+          if (!nameToUse && user && user.name) {
+            nameToUse = user.name;
+          }
+          if (!nameToUse) {
+            nameToUse = localStorage.getItem('meetsync_name') || 'Stranger';
+          }
+
+          localStorage.setItem('meetsync_name', nameToUse);
+          console.log(`Direct Connect: bypassing lobby for room ${roomId} as ${nameToUse}`);
+
+          setTimeout(() => {
+            if (active) {
+              if (isHost || roomId.startsWith('match-')) {
+                handleJoinNow(null, nameToUse);
+              } else {
+                setDisplayName(nameToUse);
+                handleAskToJoin(nameToUse);
+              }
+            }
+          }, 250);
+        }
       }
     };
     setupLobby();
 
     return () => {
+      active = false;
       // Clean up hardware streams on page departure
       cleanUpStreams();
       disconnectSocket();
@@ -283,8 +323,9 @@ const MeetingRoom = () => {
   };
 
   // Guest action to Knock (Request entry)
-  const handleAskToJoin = () => {
-    if (!displayName.trim()) {
+  const handleAskToJoin = (customName = null) => {
+    const nameToUse = customName || displayName;
+    if (!nameToUse.trim()) {
       alert('Please enter your display name before asking to join.');
       return;
     }
@@ -299,13 +340,13 @@ const MeetingRoom = () => {
     socketRef.current = socket;
 
     socket.on('connect', () => {
-      socket.emit('ask-to-join', { roomId, name: displayName.trim() });
+      socket.emit('ask-to-join', { roomId, name: nameToUse.trim() });
     });
 
     socket.on('admission-granted', () => {
       console.log('Admission granted by the host!');
       setKnockingState('admitted');
-      handleJoinNow(socket); // Join room using the already connected socket!
+      handleJoinNow(socket, nameToUse); // Join room using the already connected socket!
     });
 
     socket.on('admission-denied', () => {
@@ -317,7 +358,13 @@ const MeetingRoom = () => {
   };
 
   // 2. Joining the Video Call Room
-  const handleJoinNow = async (existingSocket = null) => {
+  const handleJoinNow = async (existingSocket = null, customName = null) => {
+    if (joinedRef.current) {
+      console.log('Skipping duplicate join room request');
+      return;
+    }
+    joinedRef.current = true;
+
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
 
     if (AudioCtx) {
@@ -325,9 +372,14 @@ const MeetingRoom = () => {
       await ctx.resume();
     }
 
-    if (!displayName.trim()) {
+    const nameToUse = customName || displayName;
+    if (!nameToUse.trim()) {
+      joinedRef.current = false;
       alert('Please enter your display name before joining.');
       return;
+    }
+    if (customName) {
+      setDisplayName(customName);
     }
     setJoined(true);
 
@@ -356,8 +408,8 @@ const MeetingRoom = () => {
     // Join room packet
     socket.emit('join-room', {
       roomId,
-      userId: null,
-      name: displayName.trim(),
+      userId: user ? user.id : null,
+      name: nameToUse.trim(),
       isMuted: !micOn,
       isCameraOff: !cameraOn,
       isHandRaised: handRaised,
@@ -503,7 +555,16 @@ const MeetingRoom = () => {
         return copy;
       });
 
-      setPeers((prev) => prev.filter((p) => p.socketId !== socketId));
+      setPeers((prev) => {
+        const remaining = prev.filter((p) => p.socketId !== socketId);
+        if (remaining.length === 0) {
+          console.log('Call partner disconnected. Exiting meet session.');
+          setTimeout(() => {
+            handleLeaveMeeting();
+          }, 800);
+        }
+        return remaining;
+      });
     });
   };
 
@@ -733,176 +794,73 @@ const MeetingRoom = () => {
     return 'grid-cols-2 lg:grid-cols-3 max-w-6xl';
   };
 
-  // LOBBY PREVIEW SCREEN RENDER
+  // LOBBY PREVIEW SCREEN RENDER (Only shown as fullscreen status for guests)
   if (!joined) {
+    if (knockingState === 'knocking') {
+      return (
+        <div className="min-h-screen bg-dark-bg text-white flex flex-col items-center justify-center p-6 relative overflow-hidden">
+          <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-indigo-600/10 rounded-full blur-[100px] pointer-events-none"></div>
+          <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-purple-600/10 rounded-full blur-[100px] pointer-events-none"></div>
+          <div className="w-full max-w-md bg-dark-card border border-indigo-500/20 rounded-3xl p-8 text-center space-y-6 shadow-2xl relative z-10 animate-pulse">
+            <div className="relative w-20 h-20 mx-auto flex items-center justify-center">
+              <div className="absolute inset-0 rounded-full bg-indigo-500/15 animate-ping"></div>
+              <div className="w-14 h-14 rounded-full bg-indigo-600 flex items-center justify-center text-white text-xl font-bold shadow-lg shadow-indigo-600/30">
+                <svg className="animate-spin h-6 w-6 text-white" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+              </div>
+            </div>
+            <div>
+              <h3 className="text-lg font-bold text-white">Asking to join...</h3>
+              <p className="text-xs text-indigo-400 mt-1 font-semibold animate-pulse">Please wait for the host to admit you.</p>
+            </div>
+            <button
+              onClick={() => navigate('/')}
+              className="w-full bg-dark-bg hover:bg-dark-hover border border-dark-border text-gray-300 font-semibold py-3 rounded-xl transition-all duration-300"
+            >
+              Cancel Request
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    if (knockingState === 'denied') {
+      return (
+        <div className="min-h-screen bg-dark-bg text-white flex flex-col items-center justify-center p-6 relative overflow-hidden">
+          <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-indigo-600/10 rounded-full blur-[100px] pointer-events-none"></div>
+          <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-purple-600/10 rounded-full blur-[100px] pointer-events-none"></div>
+          <div className="w-full max-w-md bg-dark-card border border-red-500/20 rounded-3xl p-8 text-center space-y-6 shadow-2xl relative z-10">
+            <div className="w-16 h-16 bg-red-950/40 border border-red-500/30 text-red-500 rounded-full flex items-center justify-center mx-auto text-2xl">
+              ⚠️
+            </div>
+            <div>
+              <h3 className="text-lg font-bold text-red-200">Request Denied</h3>
+              <p className="text-xs text-red-300/80 mt-1">The host of this meeting has denied your join request.</p>
+            </div>
+            <button
+              onClick={() => navigate('/')}
+              className="w-full bg-red-600 hover:bg-red-500 text-white font-semibold py-3 rounded-xl transition-all duration-300 transform active:scale-95"
+            >
+              Go to Dashboard
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // Default connecting placeholder (shows only briefly while acquiring hardware streams)
     return (
       <div className="min-h-screen bg-dark-bg text-white flex flex-col items-center justify-center p-6 relative overflow-hidden">
-        {/* Glows */}
         <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-indigo-600/10 rounded-full blur-[100px] pointer-events-none"></div>
         <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-purple-600/10 rounded-full blur-[100px] pointer-events-none"></div>
-
-        <div className="w-full max-w-4xl flex flex-col lg:flex-row items-center justify-center gap-12 z-10">
-          {/* Camera preview card */}
-          <div className="flex-1 w-full max-w-md bg-dark-card border border-dark-border rounded-2xl overflow-hidden aspect-video shadow-2xl relative flex items-center justify-center">
-            {cameraOn ? (
-              <video
-                ref={(el) => {
-                  localVideoRef.current = el;
-                  if (el) {
-                    const activeStream = isScreenSharing ? screenStreamRef.current : localStreamRef.current;
-                    if (activeStream && el.srcObject !== activeStream) {
-                      el.srcObject = activeStream;
-                    }
-                  }
-                }}
-                autoPlay
-                playsInline
-                muted
-                className="w-full h-full object-cover scale-x-[-1]"
-              />
-            ) : (
-              <div className="w-20 h-20 rounded-full bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400 text-3xl font-bold uppercase">
-                {displayName?.slice(0, 2) || 'G'}
-              </div>
-            )}
-            
-            {/* Local Stream controls */}
-            <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex items-center space-x-4 bg-black/60 backdrop-blur-md rounded-full px-4 py-2 border border-white/5">
-              <button
-                onClick={() => {
-                  const state = !micOn;
-                  setMicOn(state);
-                  if (localStreamRef.current?.getAudioTracks()[0]) {
-                    localStreamRef.current.getAudioTracks()[0].enabled = state;
-                  }
-                }}
-                className={`p-2.5 rounded-full transition-all duration-300 ${micOn ? 'text-white hover:bg-white/10' : 'bg-red-500 text-white'}`}
-              >
-                {micOn ? (
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                  </svg>
-                ) : (
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
-                  </svg>
-                )}
-              </button>
-
-              <button
-                onClick={() => {
-                  const state = !cameraOn;
-                  setCameraOn(state);
-                  if (localStreamRef.current?.getVideoTracks()[0]) {
-                    localStreamRef.current.getVideoTracks()[0].enabled = state;
-                  }
-                }}
-                className={`p-2.5 rounded-full transition-all duration-300 ${cameraOn ? 'text-white hover:bg-white/10' : 'bg-red-500 text-white'}`}
-              >
-                {cameraOn ? (
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                  </svg>
-                ) : (
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
-                  </svg>
-                )}
-              </button>
-            </div>
-          </div>
-
-          {/* Join Prompt details */}
-          <div className="flex-1 w-full max-w-sm flex flex-col space-y-6">
-            <div className="space-y-2 text-center lg:text-left">
-              <h2 className="text-3xl font-extrabold tracking-tight">Ready to join?</h2>
-              <p className="text-gray-400 text-sm">Meeting Room ID: <strong className="text-indigo-400 font-mono">{roomId}</strong></p>
-            </div>
-
-            <div className="bg-dark-card border border-dark-border rounded-xl p-4 space-y-3">
-              <p className="text-xs text-gray-400 font-semibold uppercase">Enter your display name:</p>
-              <input
-                type="text"
-                value={displayName}
-                onChange={(e) => {
-                  setDisplayName(e.target.value);
-                  localStorage.setItem('meetsync_name', e.target.value);
-                }}
-                placeholder="e.g. John Doe"
-                className="w-full bg-[#08080C] border border-dark-border focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-xl px-4 py-2.5 text-white text-sm outline-none transition-all duration-300"
-              />
-            </div>
-
-            <div className="flex flex-col space-y-4 w-full">
-              {isHost ? (
-                // Host joins instantly
-                <div className="flex items-center space-x-4">
-                  <button
-                    onClick={() => handleJoinNow()}
-                    className="flex-1 bg-indigo-600 hover:bg-indigo-500 font-semibold py-3 px-6 rounded-xl shadow-lg shadow-indigo-600/30 text-white transition-all duration-300 transform active:scale-95 text-center"
-                  >
-                    Join Now
-                  </button>
-                  <button
-                    onClick={() => navigate('/')}
-                    className="bg-dark-card hover:bg-dark-hover border border-dark-border py-3 px-6 rounded-xl text-gray-300 font-semibold transition-all duration-300 text-sm"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              ) : (
-                // Guests must knock (Ask to Join)
-                <div className="flex flex-col space-y-3">
-                  {knockingState === 'idle' && (
-                    <div className="flex items-center space-x-4">
-                      <button
-                        onClick={handleAskToJoin}
-                        className="flex-1 bg-indigo-600 hover:bg-indigo-500 font-semibold py-3 px-6 rounded-xl shadow-lg shadow-indigo-600/30 text-white transition-all duration-300 transform active:scale-95 text-center"
-                      >
-                        Ask to Join
-                      </button>
-                      <button
-                        onClick={() => navigate('/')}
-                        className="bg-dark-card hover:bg-dark-hover border border-dark-border py-3 px-6 rounded-xl text-gray-300 font-semibold transition-all duration-300 text-sm"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  )}
-
-                  {knockingState === 'knocking' && (
-                    <div className="bg-dark-card border border-indigo-500/20 rounded-xl p-4 flex flex-col items-center justify-center text-center space-y-3 animate-pulse">
-                      <svg className="animate-spin h-6 w-6 text-indigo-400" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                      </svg>
-                      <div>
-                        <p className="text-sm font-bold text-white">Asking to join...</p>
-                        <p className="text-xs text-gray-400 mt-1">Please wait for the host to admit you.</p>
-                      </div>
-                    </div>
-                  )}
-
-                  {knockingState === 'denied' && (
-                    <div className="bg-red-950/20 border border-red-500/30 rounded-xl p-4 flex flex-col items-center justify-center text-center space-y-3">
-                      <div className="text-red-400 text-2xl">⚠️</div>
-                      <div>
-                        <p className="text-sm font-bold text-red-200">Request Denied</p>
-                        <p className="text-xs text-red-300/80 mt-1">The host of this meeting has denied your join request.</p>
-                      </div>
-                      <button
-                        onClick={() => setKnockingState('idle')}
-                        className="bg-red-500 hover:bg-red-600 text-white text-xs font-semibold py-1.5 px-4 rounded-lg transition-all duration-300 transform active:scale-95"
-                      >
-                        Ask Again
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
+        <div className="w-full max-w-md bg-dark-card border border-indigo-500/20 rounded-3xl p-8 text-center space-y-6 shadow-2xl relative z-10 animate-pulse">
+          <svg className="animate-spin h-8 w-8 text-indigo-500 mx-auto" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          </svg>
+          <p className="text-sm font-bold text-white">Starting Video Call...</p>
         </div>
       </div>
     );

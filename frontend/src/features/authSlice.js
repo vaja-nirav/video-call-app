@@ -29,6 +29,20 @@ export const loginUser = createAsyncThunk(
   }
 );
 
+// Async Thunk for Google Login
+export const loginWithGoogle = createAsyncThunk(
+  'auth/googleLogin',
+  async ({ idToken }, thunkAPI) => {
+    try {
+      const response = await api.post('/auth/google-login', { idToken });
+      return response.data; // Expected { user, accessToken, refreshToken }
+    } catch (error) {
+      const message = error.response?.data?.message || 'Google Login failed';
+      return thunkAPI.rejectWithValue(message);
+    }
+  }
+);
+
 // Async Thunk for User Logout
 export const logoutUser = createAsyncThunk(
   'auth/logout',
@@ -97,6 +111,7 @@ const authSlice = createSlice({
         localStorage.setItem('user', JSON.stringify(action.payload.user));
         localStorage.setItem('accessToken', action.payload.accessToken);
         localStorage.setItem('refreshToken', action.payload.refreshToken);
+        localStorage.setItem('meetsync_first_time', 'true');
       })
       .addCase(registerUser.rejected, (state, action) => {
         state.loading = false;
@@ -119,6 +134,29 @@ const authSlice = createSlice({
         localStorage.setItem('refreshToken', action.payload.refreshToken);
       })
       .addCase(loginUser.rejected, (state, action) => {
+        state.loading = false;
+        state.error = action.payload;
+      })
+      // Google Login
+      .addCase(loginWithGoogle.pending, (state) => {
+        state.loading = true;
+        state.error = null;
+      })
+      .addCase(loginWithGoogle.fulfilled, (state, action) => {
+        state.loading = false;
+        state.user = action.payload.user;
+        state.accessToken = action.payload.accessToken;
+        state.refreshToken = action.payload.refreshToken;
+        state.isAuthenticated = true;
+
+        localStorage.setItem('user', JSON.stringify(action.payload.user));
+        localStorage.setItem('accessToken', action.payload.accessToken);
+        localStorage.setItem('refreshToken', action.payload.refreshToken);
+        if (action.payload.isNewUser) {
+          localStorage.setItem('meetsync_first_time', 'true');
+        }
+      })
+      .addCase(loginWithGoogle.rejected, (state, action) => {
         state.loading = false;
         state.error = action.payload;
       })

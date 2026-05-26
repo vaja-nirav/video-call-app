@@ -11,7 +11,9 @@ model User {
   name         String
   email        String        @unique
   password     String
+  googleId     String?       @unique
   refreshToken String?       @db.VarChar(500)
+  status       String        @default("OFFLINE") // OFFLINE, FREE, BUSY
   createdAt    DateTime      @default(now())
   
   // Relations

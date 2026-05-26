@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { Link, useNavigate } from 'react-router-dom';
-import { loginUser, clearError } from '../features/authSlice';
+import { loginUser, loginWithGoogle, clearError } from '../features/authSlice';
 
 const Login = () => {
   const [email, setEmail] = useState('');
@@ -23,6 +23,51 @@ const Login = () => {
       navigate('/');
     }
   }, [isAuthenticated, navigate]);
+
+  // Handle Google Identity SSO Callback
+  const handleGoogleCallback = (response) => {
+    if (response?.credential) {
+      dispatch(loginWithGoogle({ idToken: response.credential }));
+    }
+  };
+
+  useEffect(() => {
+    // Render Google Sign-In button once the GSI library is loaded in browser
+    const initializeGoogleSSO = () => {
+      if (window.google) {
+        window.google.accounts.id.initialize({
+          client_id: "365752923604-rdgmvemsali9e81ifc3a169h47o5i6ln.apps.googleusercontent.com",
+          callback: handleGoogleCallback,
+        });
+
+        window.google.accounts.id.renderButton(
+          document.getElementById("googleSignInButton"),
+          { 
+            theme: "filled_black", 
+            size: "large", 
+            width: "384", // Exact matching width for standard form fields
+            height: "40", // Match py-2.5 inputs/buttons height
+            text: "continue_with",
+            shape: "rectangular",
+            logo_alignment: "left"
+          }
+        );
+      }
+    };
+
+    // Double check if GSI client is loaded, otherwise retry shortly
+    if (window.google) {
+      initializeGoogleSSO();
+    } else {
+      const timer = setInterval(() => {
+        if (window.google) {
+          initializeGoogleSSO();
+          clearInterval(timer);
+        }
+      }, 500);
+      return () => clearInterval(timer);
+    }
+  }, []);
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -101,6 +146,20 @@ const Login = () => {
             )}
           </button>
         </form>
+
+        {/* Separator */}
+        <div className="flex items-center my-5 w-full">
+          <div className="flex-grow border-t border-gray-800"></div>
+          <span className="mx-3 text-[10px] font-bold text-gray-500 uppercase tracking-widest leading-none">
+            Or continue with
+          </span>
+          <div className="flex-grow border-t border-gray-800"></div>
+        </div>
+
+        {/* Native Google SSO Container */}
+        <div className="flex justify-center w-full">
+          <div id="googleSignInButton" className="w-full max-w-[384px] h-[40px] flex justify-center overflow-hidden rounded-md"></div>
+        </div>
 
         <p className="mt-8 text-center text-sm text-gray-400">
           Don't have an account?{' '}
