@@ -153,8 +153,13 @@ const MeetingRoom = () => {
   // 1. Initial Local Camera Preview Setup (Lobby Phase)
   useEffect(() => {
     const setupLobby = async () => {
+      let stream = null;
+      let audioSupported = true;
+      let videoSupported = true;
+
+      // Try requesting both Audio and Video first (Laptop default)
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
+        stream = await navigator.mediaDevices.getUserMedia({
           audio: {
             echoCancellation: true,
             noiseSuppression: true,
@@ -166,27 +171,66 @@ const MeetingRoom = () => {
             facingMode: 'user',
           },
         });
+      } catch (err) {
+        console.warn('PC lacks either a camera or mic. Attempting fallback modes...', err);
+
+        // Fallback 1: Try Audio-Only (very common for desktop PCs with mic/headset but no webcam)
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+            },
+            video: false,
+          });
+          videoSupported = false;
+          setCameraOn(false); // Dynamically toggle camera off in UI
+        } catch (audioErr) {
+          console.warn('Audio-only failed. Attempting Video-Only...', audioErr);
+
+          // Fallback 2: Try Video-Only (webcam with no microphone)
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({
+              audio: false,
+              video: {
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+                facingMode: 'user',
+              },
+            });
+            audioSupported = false;
+            setMicOn(false); // Dynamically mute in UI
+          } catch (videoErr) {
+            console.error('All media acquisition failed:', videoErr);
+            audioSupported = false;
+            videoSupported = false;
+            alert('No camera or microphone detected. You will join the meeting as a viewer/chatter only!');
+          }
+        }
+      }
+
+      if (stream) {
         localStreamRef.current = stream;
-        if (localVideoRef.current) {
+        if (localVideoRef.current && videoSupported) {
           localVideoRef.current.srcObject = stream;
         }
 
-        // Start voice detection for the local user
-        if (speakerAnalyzersRef.current.has('local')) {
-          speakerAnalyzersRef.current.get('local')();
-        }
-        const cleanup = monitorSpeaking(stream, (speaking) => {
-          setActiveSpeakers((prev) => {
-            const copy = new Set(prev);
-            if (speaking) copy.add('local');
-            else copy.delete('local');
-            return copy;
+        // Start voice detection for the local user if audio is available
+        if (audioSupported && stream.getAudioTracks().length > 0) {
+          if (speakerAnalyzersRef.current.has('local')) {
+            speakerAnalyzersRef.current.get('local')();
+          }
+          const cleanup = monitorSpeaking(stream, (speaking) => {
+            setActiveSpeakers((prev) => {
+              const copy = new Set(prev);
+              if (speaking) copy.add('local');
+              else copy.delete('local');
+              return copy;
+            });
           });
-        });
-        if (cleanup) speakerAnalyzersRef.current.set('local', cleanup);
-      } catch (err) {
-        console.error('Failed to access camera/mic preview:', err);
-        alert('Could not access your camera or microphone. Please check system permissions.');
+          if (cleanup) speakerAnalyzersRef.current.set('local', cleanup);
+        }
       }
     };
     setupLobby();
@@ -247,7 +291,11 @@ const MeetingRoom = () => {
     setKnockingState('knocking');
 
     const backendUrl = import.meta.env.VITE_API_URL || '';
-    const socket = io(backendUrl);
+    const socket = io(backendUrl, {
+      extraHeaders: {
+        'ngrok-skip-browser-warning': 'true',
+      },
+    });
     socketRef.current = socket;
 
     socket.on('connect', () => {
@@ -296,7 +344,11 @@ const MeetingRoom = () => {
       socketRef.current = existingSocket;
     } else {
       const backendUrl = import.meta.env.VITE_API_URL || '';
-      socketRef.current = io(backendUrl);
+      socketRef.current = io(backendUrl, {
+        extraHeaders: {
+          'ngrok-skip-browser-warning': 'true',
+        },
+      });
     }
 
     const socket = socketRef.current;
