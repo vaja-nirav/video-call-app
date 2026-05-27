@@ -1109,7 +1109,7 @@ const MeetingRoom = () => {
         key={item.socketId}
         onDoubleClick={() => handleCardDoubleClick(item.socketId)}
         className={isPip 
-          ? `w-40 xs:w-48 sm:w-56 aspect-video bg-dark-card border rounded-xl overflow-hidden shadow-2xl relative flex items-center justify-center cursor-pointer transition-all duration-300 hover:scale-[1.05] active:scale-95 pointer-events-auto z-20 ${isActiveSpeaker ? 'border-green-500 ring-2 ring-green-500/40 shadow-[0_0_15px_rgba(34,197,94,0.4)]' : 'border-dark-border'}`
+          ? `w-24 h-36 sm:w-56 sm:h-auto sm:aspect-video bg-dark-card border rounded-xl overflow-hidden shadow-2xl relative flex items-center justify-center cursor-pointer transition-all duration-300 hover:scale-[1.05] active:scale-95 pointer-events-auto z-20 ${isActiveSpeaker ? 'border-green-500 ring-2 ring-green-500/40 shadow-[0_0_15px_rgba(34,197,94,0.4)]' : 'border-dark-border'}`
           : `w-full h-full absolute inset-0 z-0 bg-[#0c0c14] flex items-center justify-center transition-all duration-300 ${isActiveSpeaker ? 'ring-2 ring-green-500/20' : ''}`
         }
       >
@@ -1155,30 +1155,35 @@ const MeetingRoom = () => {
         )}
 
         {/* Status badges overlay */}
-        <div className="absolute top-3 left-3 bg-black/60 backdrop-blur-md border border-white/5 px-2 py-0.5 rounded text-[10px] font-semibold text-gray-200 z-10 flex items-center space-x-1.5">
+        <div className={`absolute bg-black/60 backdrop-blur-md border border-white/5 rounded font-semibold text-gray-200 z-10 flex items-center space-x-1.5 ${isPip ? 'top-1.5 left-1.5 px-1 py-0.5 text-[8px]' : 'top-3 left-3 px-2 py-0.5 text-[10px]'}`}>
           {/* Pulsing Active Speaker dot */}
-          {isActiveSpeaker && <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>}
-          <span>{item.name} {item.isLocal ? '(You)' : ''}</span>
-          {!item.isLocal && item.isHandRaised && (
+          {isActiveSpeaker && <span className={`bg-green-500 rounded-full animate-pulse ${isPip ? 'w-1 h-1' : 'w-1.5 h-1.5'}`}></span>}
+          <span>
+            {isPip 
+              ? (item.isLocal ? 'You' : item.name?.split(' ')[0]) 
+              : `${item.name}${item.isLocal ? ' (You)' : ''}`
+            }
+          </span>
+          {((!item.isLocal) || (item.isLocal && !isPip)) && item.isHandRaised && (
             <span className="text-xs animate-bounce" title="Hand Raised">✋</span>
           )}
-          {!item.isLocal && item.isMuted && (
+          {((!item.isLocal) || (item.isLocal && !isPip)) && item.isMuted && (
             <span className="text-xs text-red-500" title="Muted">🔇</span>
           )}
         </div>
 
         {/* Bottom indicators overlay */}
-        {item.isLocal && (item.isMuted || item.isHandRaised) && (
-          <div className={`absolute right-3 flex items-center space-x-1.5 z-10 ${isPip ? 'bottom-3' : 'bottom-24'}`}>
+        {item.isLocal && isPip && (item.isMuted || item.isHandRaised) && (
+          <div className="absolute bottom-1.5 right-1.5 flex items-center space-x-1 z-10">
             {item.isMuted && (
-              <div className="p-1 bg-red-500/80 backdrop-blur-sm text-white rounded text-[10px]" title="Muted">
-                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <div className="bg-red-500/80 backdrop-blur-sm text-white rounded flex items-center justify-center p-0.5 text-[8px]" title="Muted">
+                <svg className="w-2 h-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
                 </svg>
               </div>
             )}
             {item.isHandRaised && (
-              <div className="p-1 bg-yellow-500 text-black font-bold rounded animate-bounce text-xs shadow-md" title="Hand Raised">
+              <div className="bg-yellow-500 text-black font-bold rounded animate-bounce shadow-md flex items-center justify-center p-0.5 text-[10px]" title="Hand Raised">
                 ✋
               </div>
             )}
@@ -1267,7 +1272,7 @@ const MeetingRoom = () => {
           
           {/* 2. Floating Small PIP Cards (WhatsApp Style) */}
           {pipStreams.length > 0 && (
-            <div className="absolute bottom-24 right-6 z-20 flex flex-col-reverse gap-3 pointer-events-none">
+            <div className="absolute bottom-24 right-3 sm:right-6 z-20 flex flex-col-reverse gap-3 pointer-events-none">
               {pipStreams.map(item => renderVideoCard(item, true))}
             </div>
           )}
