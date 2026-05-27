@@ -60,13 +60,16 @@ const Home = () => {
     socketRef.current = socket;
 
     socket.on('connect', () => {
+      const wasKicked = localStorage.getItem('meetsync_was_kicked') === '1';
+      if (wasKicked) localStorage.removeItem('meetsync_was_kicked');
+
       const isFirstTime = localStorage.getItem('meetsync_first_time') === 'true';
-      socket.emit('register-presence', { 
-        userId: user.id, 
+      socket.emit('register-presence', {
+        userId: user.id,
         name: user.name,
-        autoMatchEnabled: isFirstTime
+        autoMatchEnabled: autoMatch
       });
-      
+
       // Clean up first time registration flag so subsequent logins or reloads are manual
       if (isFirstTime) {
         localStorage.removeItem('meetsync_first_time');
@@ -74,8 +77,10 @@ const Home = () => {
     });
 
     socket.on('online-users-list', (usersList) => {
-      // Filter out ourself from the feed
-      const filtered = usersList.filter((u) => u.userId !== user.id);
+      // Filter out ourself AND anyone currently in a call/busy
+      const filtered = usersList.filter(
+        (u) => u.userId !== user.id && u.status !== 'BUSY' && !u.isBusy
+      );
       setOnlineUsers(filtered);
     });
 
@@ -380,7 +385,7 @@ const Home = () => {
                         </div>
                         
                         {/* Floating Active Badge */}
-                        <span className="absolute bottom-1 right-2 w-3.5 h-3.5 bg-green-500 border-2 border-[#060609] rounded-full"></span>
+                        <span className={`absolute bottom-1 right-2 w-3.5 h-3.5 border-2 border-[#060609] rounded-full ${item.status === 'BUSY' || item.isBusy ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]' : 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]'}`}></span>
                       </div>
 
                       {/* Meta User Information */}
@@ -388,9 +393,15 @@ const Home = () => {
                         <h2 className="text-xl font-bold tracking-tight text-white flex items-center justify-center space-x-1.5">
                           <span>{item.name}</span>
                         </h2>
-                        <p className="text-xxs tracking-wider uppercase font-semibold text-green-400 bg-green-500/10 border border-green-500/20 px-2.5 py-1 rounded-full">
-                          🟢 Available for call
-                        </p>
+                        {item.status === 'BUSY' || item.isBusy ? (
+                          <p className="text-xxs tracking-wider uppercase font-semibold text-red-400 bg-red-500/10 border border-red-500/20 px-2.5 py-1 rounded-full animate-pulse">
+                            🔴 In another call
+                          </p>
+                        ) : (
+                          <p className="text-xxs tracking-wider uppercase font-semibold text-green-400 bg-green-500/10 border border-green-500/20 px-2.5 py-1 rounded-full">
+                            🟢 Available for call
+                          </p>
+                        )}
                       </div>
 
                       {/* Dual Interaction Buttons */}
@@ -398,12 +409,13 @@ const Home = () => {
                         {/* Call Button */}
                         <button
                           onClick={() => handleMakeCall(item)}
-                          className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-bold py-3.5 rounded-xl shadow-md shadow-indigo-600/20 flex items-center justify-center space-x-2 transition-all duration-300 transform active:scale-95 hover:-translate-y-0.5 cursor-pointer"
+                          disabled={item.status === 'BUSY' || item.isBusy}
+                          className={`w-full font-bold py-3.5 rounded-xl shadow-md flex items-center justify-center space-x-2 transition-all duration-300 transform active:scale-95 hover:-translate-y-0.5 ${item.status === 'BUSY' || item.isBusy ? 'bg-gray-800/40 border border-gray-700/30 text-gray-500 cursor-not-allowed opacity-40 shadow-none' : 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white shadow-indigo-600/20 cursor-pointer'}`}
                         >
-                          <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
                           </svg>
-                          <span>Call {item.name} Now</span>
+                          <span>{item.status === 'BUSY' || item.isBusy ? 'Busy in another call' : `Call ${item.name} Now`}</span>
                         </button>
 
                         {/* Message Button */}

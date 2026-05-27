@@ -35,22 +35,32 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
   >();
   
   // Real-time active presence registry for online users & vertical scroll matchmaking
-  // Format: userId => { socketId, name, autoMatchEnabled, isBusy }
+  // Format: socketId => { socketId, userId, name, autoMatchEnabled, isBusy, status }
   private activePresence = new Map<
-    number,
+    string,
     {
       socketId: string;
+      userId: number | null;
       name: string;
       autoMatchEnabled: boolean;
       isBusy: boolean;
+      status?: 'FREE' | 'BUSY' | 'SEARCHING';
     }
   >();
 
   // Tracks matchmaking history of who met whom so they are not automatically matched again
-  // Format: userId => Set of userIds they have already matched with
-  private matchedHistory = new Map<number, Set<number>>();
+  // Format: key => Set of keys they have already matched with
+  private matchedHistory = new Map<string | number, Set<string | number>>();
+  
+  // Tracks only the immediate swiped partner ID to prevent immediate re-matching
+  // Format: key (userId or socketId) => partnerKey (userId or socketId)
+  private immediateSwipedPartner = new Map<string | number, string | number>();
 
-  constructor(private meetingsService: MeetingsService) {}
+  constructor(private meetingsService: MeetingsService) {
+    setInterval(() => {
+      this.processSearchingMatchmaking();
+    }, 2000);
+  }
 
   handleConnection(client: Socket) {
     console.log(`Socket Client Connected: ${client.id}`);
@@ -59,17 +69,14 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
   async handleDisconnect(client: Socket) {
     console.log(`Socket Client Disconnected: ${client.id}`);
 
-    // Remove from active presence if this was a registered presence socket
-    let foundPresence = false;
-    for (const [userId, data] of this.activePresence.entries()) {
-      if (data.socketId === client.id) {
-        this.activePresence.delete(userId);
-        foundPresence = true;
-        console.log(`Presence removed for disconnected user: ${userId}`);
-        break;
-      }
-    }
-    if (foundPresence) {
+    // Remove from active presence — but only if they are BUSY or SEARCHING.
+    // If they are FREE, it means they were swiped and their presence was already
+    // updated to FREE for instant matching; the new socket from Home will overwrite it.
+    if (this.activePresence.has(client.id)) {
+      const presence = this.activePresence.get(client.id);
+      // Always remove — new socket from Home dashboard will re-register them
+      this.activePresence.delete(client.id);
+      console.log(`Presence removed for disconnected socket: ${client.id} (was ${presence?.status})`);
       this.broadcastOnlineUsers();
     }
 
@@ -138,6 +145,20 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
       isCameraOff,
       isHandRaised,
     });
+
+    // Always register presence for any connected socket (logged-in OR guest!)
+    if (userId) {
+      this.cleanDuplicatePresence(userId, client.id);
+    }
+    this.activePresence.set(client.id, {
+      socketId: client.id,
+      userId: userId ? Number(userId) : null,
+      name,
+      autoMatchEnabled: roomId.startsWith('match-'),
+      isBusy: true,
+      status: 'BUSY',
+    });
+    this.broadcastOnlineUsers();
 
     // Join the client to the socket.io room
     client.join(roomId);
@@ -312,6 +333,157 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
     }
   }
 
+  @SubscribeMessage('next-user-request')
+  async handleNextUserRequest(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { currentUserId: number; previousUserId: number; currentSocketId?: string; previousSocketId?: string },
+  ) {
+    const currentSocketId = payload.currentSocketId || client.id;
+    console.log(`Next User skip request on socket ${currentSocketId}`);
+
+    const session = this.socketRegistry.get(client.id);
+
+    // 1. Mark current socket as SEARCHING
+    if (payload.currentUserId) {
+      this.cleanDuplicatePresence(Number(payload.currentUserId), currentSocketId);
+    }
+    const presenceSelf = this.activePresence.get(currentSocketId);
+    if (presenceSelf) {
+      presenceSelf.isBusy = false;
+      presenceSelf.status = 'SEARCHING';
+    } else {
+      this.activePresence.set(currentSocketId, {
+        socketId: currentSocketId,
+        userId: Number(payload.currentUserId) || null,
+        name: session?.name || 'Stranger',
+        autoMatchEnabled: true,
+        isBusy: false,
+        status: 'SEARCHING',
+      });
+    }
+
+    // 2. Mark previous partner's socket as FREE (waiting) directly
+    let previousSocketId = payload.previousSocketId;
+    if (!previousSocketId && payload.previousUserId) {
+      const found = Array.from(this.activePresence.entries())
+        .find(([_, data]) => data.userId === Number(payload.previousUserId));
+      if (found) previousSocketId = found[0];
+    }
+
+    if (previousSocketId) {
+      const presencePartner = this.activePresence.get(previousSocketId);
+      if (presencePartner) {
+        // Immediately mark partner as FREE so the matchmaking engine can pair
+        // User A (SEARCHING) with User C (FREE) right now — before partner disconnects.
+        presencePartner.isBusy = false;
+        presencePartner.status = 'FREE';
+        presencePartner.autoMatchEnabled = true;
+      }
+    }
+
+    // 3. Track immediate swiped partner to prevent immediate re-connection
+    const idSelf = presenceSelf?.userId || currentSocketId;
+    const idPartner = previousSocketId ? (this.activePresence.get(previousSocketId)?.userId || previousSocketId) : null;
+
+    if (idSelf && idPartner) {
+      this.immediateSwipedPartner.set(idSelf as any, idPartner as any);
+      this.immediateSwipedPartner.set(idPartner as any, idSelf as any);
+    }
+
+    // 4. Run matchmaking NOW (partner is FREE in map, User 1 is SEARCHING)
+    this.broadcastOnlineUsers();
+    this.processSearchingMatchmaking();
+
+    // 5. AFTER match is found and emitted, tell the old partner to go home
+    //    Small delay so MATCH_FOUND is sent to User 1 before partner socket closes
+    if (previousSocketId) {
+      setTimeout(() => {
+        this.server.to(previousSocketId).emit('match-disconnected');
+      }, 200);
+    }
+
+    // 6. Retry loop: if no partner was found immediately (e.g. User 3 is still navigating home
+    //    and hasn't re-registered yet), keep retrying every 500ms for up to 10 seconds.
+    //    The setInterval already retries every 2s, but this gives faster pickup.
+    let retries = 0;
+    const retryInterval = setInterval(() => {
+      retries++;
+      const stillSearching = this.activePresence.get(currentSocketId)?.status === 'SEARCHING';
+      if (!stillSearching || retries >= 20) {
+        clearInterval(retryInterval);
+        return;
+      }
+      console.log(`Retry matchmaking for ${currentSocketId} (attempt ${retries})`);
+      this.processSearchingMatchmaking();
+    }, 500);
+  }
+
+  private processSearchingMatchmaking() {
+    const searching = Array.from(this.activePresence.entries())
+      .filter(([_, data]) => data.status === 'SEARCHING')
+      .map(([_, data]) => data);
+
+    for (const userA of searching) {
+      const partner = Array.from(this.activePresence.entries())
+        .map(([_, data]) => data)
+        .find((u) => {
+          if (u.socketId === userA.socketId) return false;
+          // Must be FREE or SEARCHING
+          if (u.status !== 'FREE' && u.status !== 'SEARCHING') return false;
+
+          // If they are FREE (on the dashboard), they are eligible to be matched by a searching scroller!
+          // (They don't need active autoMatchEnabled = true to be chosen as a partner)
+
+          // Prevent matching immediate swiped partner
+          const idSelf = userA.userId || userA.socketId;
+          const idPartner = u.userId || u.socketId;
+          const swipedPartner = this.immediateSwipedPartner.get(idSelf as any);
+          if (swipedPartner && swipedPartner === idPartner) return false;
+
+          // Prevent matching own account in multiple tabs
+          if (userA.userId && u.userId && userA.userId === u.userId) return false;
+
+          return true;
+        });
+
+      if (partner) {
+        const dataA = this.activePresence.get(userA.socketId);
+        const dataB = this.activePresence.get(partner.socketId);
+        
+        const statusA = dataA?.status || 'SEARCHING';
+        const statusB = dataB?.status || 'SEARCHING';
+
+        if (dataA) {
+          dataA.isBusy = true;
+          dataA.status = 'BUSY';
+        }
+        if (dataB) {
+          dataB.isBusy = true;
+          dataB.status = 'BUSY';
+        }
+
+        const roomCode = `match-${userA.socketId}-${partner.socketId}`;
+        console.log(`Searching Matchmaking pairing found: ${userA.name} ↔ ${partner.name}. Room: ${roomCode}`);
+
+        // Emit MATCH_FOUND or auto-match-redirect depending on starting status
+        if (statusA === 'SEARCHING') {
+          this.server.to(userA.socketId).emit('MATCH_FOUND', { roomId: roomCode, partnerName: partner.name, partnerUserId: partner.userId, partnerSocketId: partner.socketId });
+        } else {
+          this.server.to(userA.socketId).emit('auto-match-redirect', { roomCode });
+        }
+
+        if (statusB === 'SEARCHING') {
+          this.server.to(partner.socketId).emit('MATCH_FOUND', { roomId: roomCode, partnerName: userA.name, partnerUserId: userA.userId, partnerSocketId: userA.socketId });
+        } else {
+          this.server.to(partner.socketId).emit('auto-match-redirect', { roomCode });
+        }
+
+        // Broadcast updated online presence list to update dashboard states instantly!
+        this.broadcastOnlineUsers();
+      }
+    }
+  }
+
   // Knocking / Join requests (like Google Meet)
   @SubscribeMessage('ask-to-join')
   async handleAskToJoin(
@@ -355,71 +527,82 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.server.to(requesterSocketId).emit('admission-denied');
   }
 
-  // --- REAL-TIME PRESENCE & AUTOMATIC MATCHMAKING ENGINE ---
+  private cleanDuplicatePresence(userId: number, currentSocketId: string) {
+    if (!userId) return;
+    const targetUserId = Number(userId);
+    for (const [socketId, data] of this.activePresence.entries()) {
+      if (data.userId === targetUserId && socketId !== currentSocketId) {
+        this.activePresence.delete(socketId);
+        console.log(`Cleaned up duplicate stale presence socket ${socketId} for user ${userId}`);
+      }
+    }
+  }
 
   private broadcastOnlineUsers() {
     const list = Array.from(this.activePresence.entries())
-      .filter(([_, data]) => !data.isBusy) // Only available users show up in list
-      .map(([userId, data]) => ({
-        userId,
+      .map(([socketId, data]) => ({
+        userId: data.userId,
         name: data.name,
         autoMatchEnabled: data.autoMatchEnabled,
+        isBusy: data.isBusy,
+        status: data.status || 'FREE',
+        socketId,
       }));
 
     console.log(`Broadcasting online users list. Count: ${list.length}`);
     this.server.emit('online-users-list', list);
   }
 
+  private getPresenceByUserId(userId: number) {
+    const targetUserId = Number(userId);
+    return Array.from(this.activePresence.values()).find((p) => p.userId === targetUserId);
+  }
+
   private tryAutoMatch() {
-    // Find all users who are currently in the active presence registry
     const freeUsers = Array.from(this.activePresence.entries())
-      .map(([userId, data]) => ({ userId, ...data }));
+      .map(([_, data]) => data);
 
     console.log(`AutoMatch Engine: active users count: ${freeUsers.length}`);
 
-    // Pair any user who has autoMatchEnabled: true (i.e. first-time registrations)
     for (const userA of freeUsers) {
-      const dataA = this.activePresence.get(userA.userId);
+      const dataA = this.activePresence.get(userA.socketId);
       if (dataA && dataA.autoMatchEnabled && !dataA.isBusy) {
         
-        // Find ANY active online user who is:
-        // 1. Not userA
-        // 2. Not currently busy in a call
-        // 3. Has not matched with userA before during this server session
         const partner = freeUsers.find((u) => {
-          if (u.userId === userA.userId || u.isBusy) return false;
-          const alreadyMatched = this.matchedHistory.get(userA.userId)?.has(u.userId) || false;
-          return !alreadyMatched;
+          if (u.socketId === userA.socketId || u.isBusy) return false;
+          if (!u.autoMatchEnabled) return false;
+          
+          const idSelf = userA.userId || userA.socketId;
+          const idPartner = u.userId || u.socketId;
+          const swipedPartner = this.immediateSwipedPartner.get(idSelf as any);
+          if (swipedPartner && swipedPartner === idPartner) return false;
+
+          // Prevent matching own account in multiple tabs
+          if (userA.userId && u.userId && userA.userId === u.userId) return false;
+
+          return true;
         });
 
         if (partner) {
-          // Mark both users as busy in registry
-          const dataB = this.activePresence.get(partner.userId);
-          if (dataA) dataA.isBusy = true;
-          if (dataB) dataB.isBusy = true;
-
-          // Record match history for both users
-          if (!this.matchedHistory.has(userA.userId)) {
-            this.matchedHistory.set(userA.userId, new Set());
+          const dataB = this.activePresence.get(partner.socketId);
+          if (dataA) {
+            dataA.isBusy = true;
+            dataA.status = 'BUSY';
           }
-          if (!this.matchedHistory.has(partner.userId)) {
-            this.matchedHistory.set(partner.userId, new Set());
+          if (dataB) {
+            dataB.isBusy = true;
+            dataB.status = 'BUSY';
           }
-          this.matchedHistory.get(userA.userId)!.add(partner.userId);
-          this.matchedHistory.get(partner.userId)!.add(userA.userId);
 
-          // Unique match room code
-          const roomCode = `match-${userA.userId}-${partner.userId}`;
-          console.log(`AutoMatch Pairing (Registration Auto-Connect): ${userA.name} ↔ ${partner.name}. Room: ${roomCode}`);
+          const roomCode = `match-${userA.socketId}-${partner.socketId}`;
+          console.log(`AutoMatch Pairing: ${userA.name} ↔ ${partner.name}. Room: ${roomCode}`);
 
-          // Emit redirection to both sockets
           this.server.to(userA.socketId).emit('auto-match-redirect', { roomCode });
           this.server.to(partner.socketId).emit('auto-match-redirect', { roomCode });
         }
       }
     }
 
-    // Broadcast updated available lists
     this.broadcastOnlineUsers();
   }
 
@@ -432,11 +615,16 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
     console.log(`Presence registered: user ${userId} (${name}), autoMatch: ${autoMatchEnabled}`);
 
     // Register presence (automatically resets isBusy to false when they return to dashboard)
-    this.activePresence.set(userId, {
+    if (userId) {
+      this.cleanDuplicatePresence(userId, client.id);
+    }
+    this.activePresence.set(client.id, {
       socketId: client.id,
+      userId: userId ? Number(userId) : null,
       name,
       autoMatchEnabled,
       isBusy: false,
+      status: 'FREE',
     });
 
     // Broadcast updated online list to everyone
@@ -454,16 +642,9 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
     @MessageBody() payload: { targetUserId: number; roomCode: string },
   ) {
     const { targetUserId, roomCode } = payload;
-    const target = this.activePresence.get(targetUserId);
+    const target = this.getPresenceByUserId(targetUserId);
     if (target) {
-      // Find caller name
-      let callerName = 'Stranger';
-      for (const [uid, data] of this.activePresence.entries()) {
-        if (data.socketId === client.id) {
-          callerName = data.name;
-          break;
-        }
-      }
+      const callerName = this.activePresence.get(client.id)?.name || 'Stranger';
 
       this.server.to(target.socketId).emit('incoming-ring', {
         callerSocketId: client.id,
@@ -481,11 +662,11 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
     const { callerSocketId, roomCode } = payload;
 
     // Set both users to busy
-    for (const [uid, data] of this.activePresence.entries()) {
-      if (data.socketId === client.id || data.socketId === callerSocketId) {
-        data.isBusy = true;
-      }
-    }
+    const presenceA = this.activePresence.get(client.id);
+    if (presenceA) presenceA.isBusy = true;
+    const presenceB = this.activePresence.get(callerSocketId);
+    if (presenceB) presenceB.isBusy = true;
+
     this.broadcastOnlineUsers();
 
     this.server.to(client.id).emit('call-connected', { roomCode });
@@ -505,7 +686,7 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: { targetUserId: number },
   ) {
-    const target = this.activePresence.get(payload.targetUserId);
+    const target = this.getPresenceByUserId(payload.targetUserId);
     if (target) {
       this.server.to(target.socketId).emit('call-cancelled');
     }
@@ -517,18 +698,12 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
     @MessageBody() payload: { targetUserId: number; content: string },
   ) {
     const { targetUserId, content } = payload;
-    const target = this.activePresence.get(targetUserId);
+    const target = this.getPresenceByUserId(targetUserId);
     if (target) {
       // Find sender details
-      let senderUserId = 0;
-      let senderName = 'Stranger';
-      for (const [uid, data] of this.activePresence.entries()) {
-        if (data.socketId === client.id) {
-          senderUserId = uid;
-          senderName = data.name;
-          break;
-        }
-      }
+      const senderPresence = this.activePresence.get(client.id);
+      const senderUserId = senderPresence?.userId || 0;
+      const senderName = senderPresence?.name || 'Stranger';
 
       this.server.to(target.socketId).emit('incoming-direct-message', {
         senderUserId,

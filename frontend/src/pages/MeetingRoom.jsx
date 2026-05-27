@@ -58,6 +58,116 @@ const MeetingRoom = () => {
   // WhatsApp PIP view states
   const [fullscreenSocketId, setFullscreenSocketId] = useState('local');
 
+  // Swipe to next user status states
+  const [activeRoomId, setActiveRoomId] = useState(roomId);
+  const [isSwitching, setIsSwitching] = useState(false);
+  const isSwitchingRef = useRef(false);
+  const wheelAccumulator = useRef(0);
+  const wheelTimeout = useRef(null);
+
+  useEffect(() => {
+    isSwitchingRef.current = isSwitching;
+  }, [isSwitching]);
+
+  useEffect(() => {
+    setActiveRoomId(roomId);
+  }, [roomId]);
+
+  // Handle desktop scroll / wheel down to swipe next
+  const handleWheel = (e) => {
+    if (isSwitchingRef.current || !joined) return;
+
+    // Accumulate deltaY
+    wheelAccumulator.current += e.deltaY;
+
+    if (wheelTimeout.current) clearTimeout(wheelTimeout.current);
+
+    wheelTimeout.current = setTimeout(() => {
+      wheelAccumulator.current = 0;
+    }, 200);
+
+    // Trigger if cumulative scroll down is strong (displacement > 30)
+    if (wheelAccumulator.current > 30) {
+      wheelAccumulator.current = 0;
+      if (wheelTimeout.current) clearTimeout(wheelTimeout.current);
+      triggerNextUser();
+    }
+  };
+
+  // Handle mobile / tablet touch gesture swipe up or down to trigger next user
+  const touchStartY = useRef(0);
+  
+  const handleTouchStart = (e) => {
+    if (isSwitchingRef.current || !joined) return;
+    touchStartY.current = e.touches[0].clientY;
+  };
+
+  const handleTouchEnd = (e) => {
+    if (isSwitchingRef.current || !joined) return;
+    const touchEndY = e.changedTouches[0].clientY;
+    const diffY = touchStartY.current - touchEndY;
+    
+    // Support vertical skips with extremely light 50px threshold
+    if (Math.abs(diffY) > 50) {
+      triggerNextUser();
+    }
+  };
+
+  const triggerNextUser = () => {
+    if (isSwitchingRef.current || !socketRef.current) return;
+    
+    console.log('Skipping current match...');
+    isSwitchingRef.current = true;
+    setIsSwitching(true);
+
+    // Retrieve previous partner's details first
+    const partnerUserId = peers[0]?.userId || null;
+    const partnerSocketId = peers[0]?.socketId || null;
+    
+    // Close existing WebRTC peer connections cleanly
+    peerConnectionsRef.current.forEach((pc) => {
+      pc.onicecandidate = null;
+      pc.ontrack = null;
+      pc.onconnectionstatechange = null;
+      pc.close();
+    });
+    peerConnectionsRef.current.clear();
+    
+    // Clear other peers stream and chat messages state
+    setPeers([]);
+    setUnreadMessages(0);
+    setChatMessages([]);
+    
+    // Emit NEXT_USER_REQUEST to server with payload matching STEP 2
+    socketRef.current.emit('next-user-request', {
+      currentUserId: user ? user.id : null,
+      previousUserId: partnerUserId,
+      currentSocketId: socketRef.current.id,
+      previousSocketId: partnerSocketId,
+    });
+  };
+
+  const handlePartnerDisconnected = () => {
+    if (isSwitchingRef.current) return;
+    
+    console.log('Partner disconnected. Auto-searching next user...');
+    setIsSwitching(true);
+
+    // Close existing WebRTC peer connections cleanly
+    peerConnectionsRef.current.forEach((pc) => {
+      pc.onicecandidate = null;
+      pc.ontrack = null;
+      pc.onconnectionstatechange = null;
+      pc.close();
+    });
+    peerConnectionsRef.current.clear();
+    
+    // Clear other peers stream and chat messages state
+    setPeers([]);
+    setUnreadMessages(0);
+    setChatMessages([]);
+  };
+
   // Handle double-clicking a video card to swap fullscreen / PIP view
   const handleCardDoubleClick = (clickedSocketId) => {
     if (clickedSocketId !== fullscreenSocketId) {
@@ -211,25 +321,14 @@ const MeetingRoom = () => {
       let audioSupported = true;
       let videoSupported = true;
 
-      // Try requesting both Audio and Video first (Laptop default)
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-          video: {
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            facingMode: 'user',
-          },
-        });
-      } catch (err) {
-        if (!active) return;
-        console.warn('PC lacks either a camera or mic. Attempting fallback modes...', err);
-
-        // Fallback 1: Try Audio-Only (very common for desktop PCs with mic/headset but no webcam)
+      if (localStreamRef.current) {
+        console.log('Reusing existing local media stream');
+        stream = localStreamRef.current;
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
+        }
+      } else {
+        // Try requesting both Audio and Video first (Laptop default)
         try {
           stream = await navigator.mediaDevices.getUserMedia({
             audio: {
@@ -237,32 +336,51 @@ const MeetingRoom = () => {
               noiseSuppression: true,
               autoGainControl: true,
             },
-            video: false,
+            video: {
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+              facingMode: 'user',
+            },
           });
-          videoSupported = false;
-          setCameraOn(false); // Dynamically toggle camera off in UI
-        } catch (audioErr) {
+        } catch (err) {
           if (!active) return;
-          console.warn('Audio-only failed. Attempting Video-Only...', audioErr);
+          console.warn('PC lacks either a camera or mic. Attempting fallback modes...', err);
 
-          // Fallback 2: Try Video-Only (webcam with no microphone)
+          // Fallback 1: Try Audio-Only (very common for desktop PCs with mic/headset but no webcam)
           try {
             stream = await navigator.mediaDevices.getUserMedia({
-              audio: false,
-              video: {
-                width: { ideal: 1280 },
-                height: { ideal: 720 },
-                facingMode: 'user',
+              audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
               },
+              video: false,
             });
-            audioSupported = false;
-            setMicOn(false); // Dynamically mute in UI
-          } catch (videoErr) {
-            if (!active) return;
-            console.error('All media acquisition failed:', videoErr);
-            audioSupported = false;
             videoSupported = false;
-            alert('No camera or microphone detected. You will join the meeting as a viewer/chatter only!');
+            setCameraOn(false); // Dynamically toggle camera off in UI
+          } catch (audioErr) {
+            if (!active) return;
+            console.warn('Audio-only failed. Attempting Video-Only...', audioErr);
+
+            // Fallback 2: Try Video-Only (webcam with no microphone)
+            try {
+              stream = await navigator.mediaDevices.getUserMedia({
+                audio: false,
+                video: {
+                  width: { ideal: 1280 },
+                  height: { ideal: 720 },
+                  facingMode: 'user',
+                },
+              });
+              audioSupported = false;
+              setMicOn(false); // Dynamically mute in UI
+            } catch (videoErr) {
+              if (!active) return;
+              console.error('All media acquisition failed:', videoErr);
+              audioSupported = false;
+              videoSupported = false;
+              alert('No camera or microphone detected. You will join the meeting as a viewer/chatter only!');
+            }
           }
         }
       }
@@ -295,42 +413,45 @@ const MeetingRoom = () => {
           });
           if (cleanup) speakerAnalyzersRef.current.set('local', cleanup);
         }
+      }
 
-        // ALWAYS bypass lobby preview page for both hosts and guests
-        if (roomId) {
-          let nameToUse = displayName;
-          if (!nameToUse && user && user.name) {
-            nameToUse = user.name;
-          }
-          if (!nameToUse) {
-            nameToUse = localStorage.getItem('meetsync_name') || 'Stranger';
-          }
-
-          localStorage.setItem('meetsync_name', nameToUse);
-          console.log(`Direct Connect: bypassing lobby for room ${roomId} as ${nameToUse}`);
-
-          setTimeout(() => {
-            if (active) {
-              if (isHost || roomId.startsWith('match-')) {
-                handleJoinNow(null, nameToUse);
-              } else {
-                setDisplayName(nameToUse);
-                handleAskToJoin(nameToUse);
-              }
-            }
-          }, 250);
+      // ALWAYS bypass lobby preview page for both hosts and guests (even without camera/mic stream!)
+      if (roomId) {
+        let nameToUse = displayName;
+        if (!nameToUse && user && user.name) {
+          nameToUse = user.name;
         }
+        if (!nameToUse) {
+          nameToUse = localStorage.getItem('meetsync_name') || 'Stranger';
+        }
+
+        localStorage.setItem('meetsync_name', nameToUse);
+        console.log(`Direct Connect: bypassing lobby for room ${roomId} as ${nameToUse}`);
+
+        setTimeout(() => {
+          if (active) {
+            if (isHost || roomId.startsWith('match-')) {
+              handleJoinNow(null, nameToUse);
+            } else {
+              setDisplayName(nameToUse);
+              handleAskToJoin(nameToUse);
+            }
+          }
+        }, 250);
       }
     };
     setupLobby();
 
     return () => {
       active = false;
-      // Clean up hardware streams on page departure
-      cleanUpStreams();
+      // ONLY clean up streams if we are fully leaving the call room dashboard,
+      // NOT if we are simply auto-matching / transition-switching to the next user!
+      if (!isSwitchingRef.current) {
+        cleanUpStreams();
+      }
       disconnectSocket();
     };
-  }, []);
+  }, [roomId]);
 
   function cleanUpStreams() {
     if (localStreamRef.current) {
@@ -457,7 +578,7 @@ const MeetingRoom = () => {
 
     // Join room packet
     socket.emit('join-room', {
-      roomId,
+      roomId: activeRoomId,
       userId: user ? user.id : null,
       name: nameToUse.trim(),
       isMuted: !micOn,
@@ -492,6 +613,7 @@ const MeetingRoom = () => {
       // Add all existing participants to our React peers state array so their cards render instantly!
       setPeers(peersList.map((peer) => ({
         socketId: peer.socketId,
+        userId: peer.userId,
         name: peer.name,
         stream: null,
         isMuted: peer.isMuted ?? false,
@@ -509,12 +631,12 @@ const MeetingRoom = () => {
     });
 
     // Event: New user joined
-    socket.on('user-joined', ({ socketId, name, isMuted, isCameraOff, isHandRaised }) => {
+    socket.on('user-joined', ({ socketId, userId, name, isMuted, isCameraOff, isHandRaised }) => {
       console.log(`User joined: ${name} (${socketId})`);
       // Add them to the peers UI immediately
       setPeers((prev) => {
         if (prev.find((p) => p.socketId === socketId)) return prev;
-        return [...prev, { socketId, name, stream: null, isMuted: isMuted ?? false, isCameraOff: isCameraOff ?? false, isHandRaised: isHandRaised ?? false }];
+        return [...prev, { socketId, userId, name, stream: null, isMuted: isMuted ?? false, isCameraOff: isCameraOff ?? false, isHandRaised: isHandRaised ?? false }];
       });
     });
 
@@ -598,6 +720,29 @@ const MeetingRoom = () => {
       }
     });
 
+    // Event: Match disconnected (partner swiped away)
+    socket.on('match-disconnected', () => {
+      console.log('Match disconnected by partner. Redirecting to home...');
+      // Flag so Home page knows NOT to auto-match this user on arrival —
+      // they were kicked, not voluntarily searching.
+      localStorage.setItem('meetsync_was_kicked', '1');
+      handleLeaveMeeting();
+    });
+
+    // Event: MATCH_FOUND (found next user!)
+    socket.on('MATCH_FOUND', ({ roomId: newRoomId, partnerName, partnerUserId }) => {
+      console.log(`MATCH_FOUND received! New room: ${newRoomId}, partner: ${partnerName}`);
+      
+      // Lock switching state to prevent unmount triggers
+      isSwitchingRef.current = true;
+      setIsSwitching(true);
+
+      // Keep showing the transition screen briefly, then redirect cleanly to the new room ID
+      setTimeout(() => {
+        window.location.href = `/room/${newRoomId}`;
+      }, 800);
+    });
+
     // Event: User Left Room
     socket.on('user-left', ({ socketId }) => {
       console.log(`User left: ${socketId}`);
@@ -621,10 +766,15 @@ const MeetingRoom = () => {
       setPeers((prev) => {
         const remaining = prev.filter((p) => p.socketId !== socketId);
         if (remaining.length === 0) {
-          console.log('Call partner disconnected. Exiting meet session.');
-          setTimeout(() => {
-            handleLeaveMeeting();
-          }, 800);
+          console.log('Call partner disconnected.');
+          if (isSwitchingRef.current) {
+            console.log('We are actively switching/searching, ignoring partner departure.');
+          } else {
+            console.log('Partner left, leaving to home page...');
+            setTimeout(() => {
+              handleLeaveMeeting();
+            }, 800);
+          }
         }
         return remaining;
       });
@@ -757,7 +907,10 @@ const MeetingRoom = () => {
     setChatInput('');
   };
 
-  const handleLeaveMeeting = () => {
+  const handleLeaveMeeting = (voluntary = false) => {
+    if (voluntary) {
+      localStorage.setItem('meetsync_automatch', 'false');
+    }
     cleanUpStreams();
     disconnectSocket();
     navigate('/');
@@ -1031,7 +1184,9 @@ const MeetingRoom = () => {
 
   // ACTIVE CALL SCREEN RENDER
   return (
-    <div className="h-screen max-h-screen bg-dark-bg text-white flex flex-col relative overflow-hidden">
+    <div 
+      className="h-screen max-h-screen bg-dark-bg text-white flex flex-col relative overflow-hidden"
+    >
       {/* Knocking Request Popup Notification for Host */}
       {isHost && knockingRequests.length > 0 && (
         <div className="fixed top-6 right-6 z-50 w-80 bg-dark-card/95 border border-indigo-500/30 backdrop-blur-xl rounded-2xl p-4 shadow-[0_10px_30px_rgba(99,102,241,0.2)] animate-pulse">
@@ -1077,7 +1232,19 @@ const MeetingRoom = () => {
         )}
         
         {/* Dynamic Video Grid Area (WhatsApp PIP layout style) */}
-        <div className="flex-grow flex-1 self-stretch relative flex items-center justify-center bg-[#060609] overflow-hidden">
+        <div 
+          id="video-grid-area"
+          className={`flex-grow flex-1 self-stretch relative flex items-center justify-center bg-[#060609] overflow-hidden transform transition-all duration-700 cubic-bezier(0.16, 1, 0.3, 1) ${isSwitching ? '-translate-y-full opacity-0 scale-95' : 'translate-y-0 opacity-100 scale-100'}`}
+        >
+          {/* 100% Bulletproof Transparent Gesture Shield */}
+          <div 
+            className="absolute inset-0 z-10 cursor-ns-resize pointer-events-auto bg-transparent"
+            onWheel={handleWheel}
+            onTouchStart={handleTouchStart}
+            onTouchEnd={handleTouchEnd}
+            onDoubleClick={() => fullscreenStream && handleCardDoubleClick(fullscreenStream.socketId)}
+          />
+          
           {/* 1. Fullscreen Main Video */}
           {fullscreenStream && renderVideoCard(fullscreenStream, false)}
           
@@ -1268,9 +1435,8 @@ const MeetingRoom = () => {
             <span className="text-lg leading-none font-bold">✋</span>
           </button>
 
-          {/* End Call button */}
           <button
-            onClick={handleLeaveMeeting}
+            onClick={() => handleLeaveMeeting(true)}
             className="p-3.5 bg-red-600 hover:bg-red-500 text-white rounded-full transition-all duration-300 shadow-lg shadow-red-600/35 transform hover:scale-105 active:scale-95"
             title="Leave Meeting"
           >
@@ -1308,6 +1474,37 @@ const MeetingRoom = () => {
           </button>
         </div>
       </div>
+
+      {/* Premium TikTok-style Swipe-to-Next Loading Overlay */}
+      {isSwitching && (
+        <div className="absolute inset-0 bg-[#060609]/80 backdrop-blur-xl z-40 flex flex-col items-center justify-center animate-fade-in">
+          <div className="relative flex flex-col items-center space-y-6">
+            {/* Animated Pulsing Radar Rings */}
+            <div className="relative w-28 h-28 flex items-center justify-center">
+              <div className="absolute inset-0 rounded-full bg-indigo-500/10 border border-indigo-500/20 animate-ping" style={{ animationDuration: '3s' }}></div>
+              <div className="absolute inset-2 rounded-full bg-indigo-500/20 border border-indigo-500/30 animate-ping" style={{ animationDuration: '2s' }}></div>
+              <div className="absolute inset-4 rounded-full bg-indigo-500/35 border border-indigo-500/40 animate-ping" style={{ animationDuration: '1.5s' }}></div>
+              
+              {/* Center Icon */}
+              <div className="w-16 h-16 rounded-full bg-gradient-to-tr from-indigo-600 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/30">
+                <svg className="w-8 h-8 text-white animate-spin" style={{ animationDuration: '2s' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.21 7.89M9 11l3 3L22 4" />
+                </svg>
+              </div>
+            </div>
+            
+            {/* Status Text */}
+            <div className="text-center space-y-2">
+              <h3 className="text-xl font-bold tracking-wider text-white uppercase bg-clip-text text-transparent bg-gradient-to-r from-indigo-200 via-white to-purple-200">
+                Finding next user...
+              </h3>
+              <p className="text-xs text-indigo-400 font-semibold tracking-widest uppercase animate-pulse">
+                Connecting you to someone new...
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
