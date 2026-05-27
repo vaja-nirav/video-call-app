@@ -908,6 +908,7 @@ const MeetingRoom = () => {
   };
 
   const handleLeaveMeeting = () => {
+    localStorage.setItem('meetsync_just_left_call', 'true');
     cleanUpStreams();
     disconnectSocket();
     navigate('/');

@@ -58,6 +58,7 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
 
   constructor(private meetingsService: MeetingsService) {
     setInterval(() => {
+      this.tryAutoMatch();
       this.processSearchingMatchmaking();
     }, 2000);
   }
@@ -574,50 +575,54 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
 
   private tryAutoMatch() {
     const freeUsers = Array.from(this.activePresence.entries())
-      .map(([_, data]) => data);
+      .map(([_, data]) => data)
+      .filter((u) => !u.isBusy && u.status !== 'BUSY');
 
-    console.log(`AutoMatch Engine: active users count: ${freeUsers.length}`);
-
-    for (const userA of freeUsers) {
+    for (let i = 0; i < freeUsers.length; i++) {
+      const userA = freeUsers[i];
       const dataA = this.activePresence.get(userA.socketId);
-      if (dataA && dataA.autoMatchEnabled && !dataA.isBusy) {
-        
-        const partner = freeUsers.find((u) => {
-          if (u.socketId === userA.socketId || u.isBusy) return false;
-          if (!u.autoMatchEnabled) return false;
-          
-          const idSelf = userA.userId || userA.socketId;
-          const idPartner = u.userId || u.socketId;
-          const swipedPartner = this.immediateSwipedPartner.get(idSelf as any);
-          if (swipedPartner && swipedPartner === idPartner) return false;
+      if (!dataA || dataA.isBusy) continue;
 
-          // Prevent matching own account in multiple tabs
-          if (userA.userId && u.userId && userA.userId === u.userId) return false;
+      // Find an eligible partner starting from the next index
+      const partnerIndex = freeUsers.findIndex((u, idx) => {
+        if (idx <= i) return false;
+        if (u.isBusy || u.status === 'BUSY') return false;
 
-          return true;
-        });
+        // Prevent matching own account in multiple tabs
+        if (userA.userId && u.userId && userA.userId === u.userId) return false;
 
-        if (partner) {
-          const dataB = this.activePresence.get(partner.socketId);
-          if (dataA) {
-            dataA.isBusy = true;
-            dataA.status = 'BUSY';
-          }
-          if (dataB) {
-            dataB.isBusy = true;
-            dataB.status = 'BUSY';
-          }
+        // Prevent matching immediate swiped partner
+        const idSelf = userA.userId || userA.socketId;
+        const idPartner = u.userId || u.socketId;
+        const swipedPartner = this.immediateSwipedPartner.get(idSelf as any);
+        if (swipedPartner && swipedPartner === idPartner) return false;
 
-          const roomCode = `match-${userA.socketId}-${partner.socketId}`;
-          console.log(`AutoMatch Pairing: ${userA.name} ↔ ${partner.name}. Room: ${roomCode}`);
+        return true;
+      });
 
-          this.server.to(userA.socketId).emit('auto-match-redirect', { roomCode });
-          this.server.to(partner.socketId).emit('auto-match-redirect', { roomCode });
+      if (partnerIndex !== -1) {
+        const partner = freeUsers[partnerIndex];
+        const dataB = this.activePresence.get(partner.socketId);
+
+        if (dataA) {
+          dataA.isBusy = true;
+          dataA.status = 'BUSY';
         }
+        if (dataB) {
+          dataB.isBusy = true;
+          dataB.status = 'BUSY';
+        }
+
+        const roomCode = `match-${userA.socketId}-${partner.socketId}`;
+        console.log(`AutoMatch Pairing: ${userA.name} ↔ ${partner.name}. Room: ${roomCode}`);
+
+        this.server.to(userA.socketId).emit('auto-match-redirect', { roomCode });
+        this.server.to(partner.socketId).emit('auto-match-redirect', { roomCode });
+
+        // Broadcast updated presence list to update dashboard states instantly!
+        this.broadcastOnlineUsers();
       }
     }
-
-    this.broadcastOnlineUsers();
   }
 
   @SubscribeMessage('register-presence')

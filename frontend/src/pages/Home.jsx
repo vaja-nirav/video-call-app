@@ -24,7 +24,14 @@ const Home = () => {
   const [chatInput, setChatInput] = useState('');
 
   // Auto-Match toggle state
-  const [autoMatch, setAutoMatch] = useState(true);
+  const [autoMatch, setAutoMatch] = useState(() => {
+    const justLeft = localStorage.getItem('meetsync_just_left_call') === 'true';
+    if (justLeft) {
+      localStorage.removeItem('meetsync_just_left_call');
+      return false;
+    }
+    return true;
+  });
 
   const dispatch = useDispatch();
   const navigate = useNavigate();
@@ -57,7 +64,7 @@ const Home = () => {
     });
     socketRef.current = socket;
 
-    socket.on('connect', () => {
+    const handleConnect = () => {
       const wasKicked = localStorage.getItem('meetsync_was_kicked') === '1';
       if (wasKicked) localStorage.removeItem('meetsync_was_kicked');
 
@@ -72,7 +79,12 @@ const Home = () => {
       if (isFirstTime) {
         localStorage.removeItem('meetsync_first_time');
       }
-    });
+    };
+
+    socket.on('connect', handleConnect);
+    if (socket.connected) {
+      handleConnect();
+    }
 
     socket.on('online-users-list', (usersList) => {
       // Filter out ourself AND anyone currently in a call/busy
@@ -265,7 +277,9 @@ const Home = () => {
   };
 
   const handleLogout = () => {
-    dispatch(logoutUser());
+    dispatch(logoutUser()).then(() => {
+      window.location.href = '/';
+    });
   };
 
   const formatTime = (date) => {

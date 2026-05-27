@@ -53,9 +53,37 @@ export const logoutUser = createAsyncThunk(
       // Even if network logout fails, we clear state locally
       console.warn('Network logout failed, clearing local session anyway.', error);
     } finally {
+      // Clear Redux state keys from localStorage
       localStorage.removeItem('accessToken');
       localStorage.removeItem('refreshToken');
       localStorage.removeItem('user');
+      localStorage.removeItem('meetsync_first_time');
+      localStorage.removeItem('meetsync_was_kicked');
+
+      // Thoroughly clear all localStorage and sessionStorage keys
+      try {
+        localStorage.clear();
+        sessionStorage.clear();
+      } catch (storageErr) {
+        console.warn('Failed to clear client storages:', storageErr);
+      }
+
+      // Expire and clear all cookies on document level
+      try {
+        const cookies = document.cookie.split(';');
+        for (let i = 0; i < cookies.length; i++) {
+          const cookie = cookies[i];
+          const eqPos = cookie.indexOf('=');
+          const name = eqPos > -1 ? cookie.substring(0, eqPos).trim() : cookie.trim();
+          
+          // Clear standard cookie path
+          document.cookie = `${name}=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/`;
+          // Clear subdomain/domain specific cookie paths
+          document.cookie = `${name}=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/;domain=${window.location.hostname}`;
+        }
+      } catch (cookieErr) {
+        console.warn('Failed to completely clear cookies:', cookieErr);
+      }
     }
   }
 );
@@ -132,6 +160,7 @@ const authSlice = createSlice({
         localStorage.setItem('user', JSON.stringify(action.payload.user));
         localStorage.setItem('accessToken', action.payload.accessToken);
         localStorage.setItem('refreshToken', action.payload.refreshToken);
+        localStorage.setItem('meetsync_first_time', 'true');
       })
       .addCase(loginUser.rejected, (state, action) => {
         state.loading = false;
