@@ -1466,11 +1466,11 @@ const MeetingRoom = () => {
 
           <button
             onClick={handleLeaveMeeting}
-            className="p-3.5 bg-red-600 hover:bg-red-500 text-white rounded-full transition-all duration-300 shadow-lg shadow-red-600/35 transform hover:scale-105 active:scale-95"
-            title="Leave Meeting"
+            className="flex items-center justify-center w-12 h-12 bg-red-600 hover:bg-red-500 text-white rounded-full transition-all duration-300 shadow-lg shadow-red-600/35 transform hover:scale-105 active:scale-95"
+            title="End Call"
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 17l5-5m0 0l-5-5m5 5H9a3 3 0 00-3 3v1a3 3 0 003 3h1" />
+            <svg className="w-7 h-7 block" fill="currentColor" viewBox="0 0 24 24">
+              <path transform="translate(0, 1)" d="M12 9c-2.2 0-4.3.3-6.2.9C5.3 10.1 5 10.6 5 11.2V14c0 .6.4 1 1 1 .9 0 1.8-.1 2.7-.4.5-.1.8-.6.8-1.1v-1.9c1.6-.5 3.3-.8 5.1-.8 1.8 0 3.5.3 5.1.8v1.9c0 .5.3 1 .8 1.1.9.3 1.8.4 2.7.4.6 0 1-.4 1-1v-2.8c0-.6-.3-1.1-.8-1.3C16.3 9.3 14.2 9 12 9z"/>
             </svg>
           </button>
         </div>
