@@ -413,7 +413,11 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
     //    Small delay so MATCH_FOUND is sent to User 1 before partner socket closes
     if (previousSocketId) {
       setTimeout(() => {
-        this.server.to(previousSocketId).emit('match-disconnected');
+        const presence = this.activePresence.get(previousSocketId);
+        // Only send match-disconnected if they haven't been matched in the meantime (still FREE and not busy)
+        if (presence && presence.status === 'FREE' && !presence.isBusy) {
+          this.server.to(previousSocketId).emit('match-disconnected');
+        }
       }, 200);
     }
 
@@ -439,15 +443,12 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
       .map(([_, data]) => data);
 
     for (const userA of searching) {
-      const partner = Array.from(this.activePresence.entries())
+      // Try to find a FREE partner first (prioritize dashboard waiting users)
+      let partner = Array.from(this.activePresence.entries())
         .map(([_, data]) => data)
         .find((u) => {
           if (u.socketId === userA.socketId) return false;
-          // Must be FREE or SEARCHING
-          if (u.status !== 'FREE' && u.status !== 'SEARCHING') return false;
-
-          // If they are FREE (on the dashboard), they are eligible to be matched by a searching scroller!
-          // (They don't need active autoMatchEnabled = true to be chosen as a partner)
+          if (u.status !== 'FREE') return false;
 
           // Prevent matching immediate swiped partner
           const idSelf = userA.userId || userA.socketId;
@@ -460,6 +461,27 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
 
           return true;
         });
+
+      // Fallback: If no FREE partner is available, match with another SEARCHING user
+      if (!partner) {
+        partner = Array.from(this.activePresence.entries())
+          .map(([_, data]) => data)
+          .find((u) => {
+            if (u.socketId === userA.socketId) return false;
+            if (u.status !== 'SEARCHING') return false;
+
+            // Prevent matching immediate swiped partner
+            const idSelf = userA.userId || userA.socketId;
+            const idPartner = u.userId || u.socketId;
+            const swipedPartner = this.immediateSwipedPartner.get(idSelf as any);
+            if (swipedPartner && swipedPartner === idPartner) return false;
+
+            // Prevent matching own account in multiple tabs
+            if (userA.userId && u.userId && userA.userId === u.userId) return false;
+
+            return true;
+          });
+      }
 
       if (partner) {
         const dataA = this.activePresence.get(userA.socketId);
@@ -480,14 +502,17 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
         const roomCode = `match-${userA.socketId}-${partner.socketId}`;
         console.log(`Searching Matchmaking pairing found: ${userA.name} ↔ ${partner.name}. Room: ${roomCode}`);
 
-        // Emit MATCH_FOUND or auto-match-redirect depending on starting status
-        if (statusA === 'SEARCHING') {
+        // Emit MATCH_FOUND or auto-match-redirect depending on whether their socket is in a meeting room registry
+        const inRoomA = this.socketRegistry.has(userA.socketId);
+        const inRoomB = this.socketRegistry.has(partner.socketId);
+
+        if (inRoomA) {
           this.server.to(userA.socketId).emit('MATCH_FOUND', { roomId: roomCode, partnerName: partner.name, partnerUserId: partner.userId, partnerSocketId: partner.socketId });
         } else {
           this.server.to(userA.socketId).emit('auto-match-redirect', { roomCode });
         }
 
-        if (statusB === 'SEARCHING') {
+        if (inRoomB) {
           this.server.to(partner.socketId).emit('MATCH_FOUND', { roomId: roomCode, partnerName: userA.name, partnerUserId: userA.userId, partnerSocketId: userA.socketId });
         } else {
           this.server.to(partner.socketId).emit('auto-match-redirect', { roomCode });
@@ -616,8 +641,20 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
         const roomCode = `match-${userA.socketId}-${partner.socketId}`;
         console.log(`AutoMatch Pairing: ${userA.name} ↔ ${partner.name}. Room: ${roomCode}`);
 
-        this.server.to(userA.socketId).emit('auto-match-redirect', { roomCode });
-        this.server.to(partner.socketId).emit('auto-match-redirect', { roomCode });
+        const inRoomA = this.socketRegistry.has(userA.socketId);
+        const inRoomB = this.socketRegistry.has(partner.socketId);
+
+        if (inRoomA) {
+          this.server.to(userA.socketId).emit('MATCH_FOUND', { roomId: roomCode, partnerName: partner.name, partnerUserId: partner.userId, partnerSocketId: partner.socketId });
+        } else {
+          this.server.to(userA.socketId).emit('auto-match-redirect', { roomCode });
+        }
+
+        if (inRoomB) {
+          this.server.to(partner.socketId).emit('MATCH_FOUND', { roomId: roomCode, partnerName: userA.name, partnerUserId: userA.userId, partnerSocketId: userA.socketId });
+        } else {
+          this.server.to(partner.socketId).emit('auto-match-redirect', { roomCode });
+        }
 
         // Broadcast updated presence list to update dashboard states instantly!
         this.broadcastOnlineUsers();
