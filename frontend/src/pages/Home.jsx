@@ -416,15 +416,6 @@ const Home = () => {
                         <h2 className="text-xl font-bold tracking-tight text-white flex items-center justify-center space-x-1.5">
                           <span>{item.name}</span>
                         </h2>
-                        {item.status === 'BUSY' || item.isBusy ? (
-                          <p className="text-xxs tracking-wider uppercase font-semibold text-red-400 bg-red-500/10 border border-red-500/20 px-2.5 py-1 rounded-full animate-pulse">
-                            🔴 In another call
-                          </p>
-                        ) : (
-                          <p className="text-xxs tracking-wider uppercase font-semibold text-green-400 bg-green-500/10 border border-green-500/20 px-2.5 py-1 rounded-full">
-                            🟢 Available for call
-                          </p>
-                        )}
                       </div>
 
                       {/* Dual Interaction Buttons */}

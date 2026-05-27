@@ -1403,12 +1403,6 @@ const MeetingRoom = () => {
 
       {/* 3. Bottom Control Navigation Bar */}
       <div className="absolute bottom-0 left-0 right-0 h-20 bg-dark-card border-t border-dark-border flex items-center justify-between px-3 sm:px-6 z-30">
-        {/* Left: Meeting code identifier */}
-        <div className="hidden sm:flex items-center space-x-3">
-          <span className="text-sm font-semibold tracking-wider font-mono text-gray-400 bg-[#08080C] border border-dark-border px-3 py-1.5 rounded-lg select-all">
-            {roomId}
-          </span>
-        </div>
 
         {/* Center: WebRTC controls */}
         <div className="flex items-center space-x-2 sm:space-x-4 mx-auto sm:mx-0">
