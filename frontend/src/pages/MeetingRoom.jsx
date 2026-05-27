@@ -1159,23 +1159,31 @@ const MeetingRoom = () => {
           {/* Pulsing Active Speaker dot */}
           {isActiveSpeaker && <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>}
           <span>{item.name} {item.isLocal ? '(You)' : ''}</span>
+          {!item.isLocal && item.isHandRaised && (
+            <span className="text-xs animate-bounce" title="Hand Raised">✋</span>
+          )}
+          {!item.isLocal && item.isMuted && (
+            <span className="text-xs text-red-500" title="Muted">🔇</span>
+          )}
         </div>
 
         {/* Bottom indicators overlay */}
-        <div className="absolute bottom-3 right-3 flex items-center space-x-1.5 z-10">
-          {item.isMuted && (
-            <div className="p-1 bg-red-500/80 backdrop-blur-sm text-white rounded text-[10px]" title="Muted">
-              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-              </svg>
-            </div>
-          )}
-          {item.isHandRaised && (
-            <div className="p-1 bg-yellow-500 text-black font-bold rounded animate-bounce text-xs shadow-md" title="Hand Raised">
-              ✋
-            </div>
-          )}
-        </div>
+        {item.isLocal && (item.isMuted || item.isHandRaised) && (
+          <div className={`absolute right-3 flex items-center space-x-1.5 z-10 ${isPip ? 'bottom-3' : 'bottom-24'}`}>
+            {item.isMuted && (
+              <div className="p-1 bg-red-500/80 backdrop-blur-sm text-white rounded text-[10px]" title="Muted">
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                </svg>
+              </div>
+            )}
+            {item.isHandRaised && (
+              <div className="p-1 bg-yellow-500 text-black font-bold rounded animate-bounce text-xs shadow-md" title="Hand Raised">
+                ✋
+              </div>
+            )}
+          </div>
+        )}
       </div>
     );
   };
