@@ -73,12 +73,12 @@ const MeetingRoom = () => {
     setActiveRoomId(roomId);
   }, [roomId]);
 
-  // Handle desktop scroll / wheel down to swipe next
+  // Handle desktop scroll / wheel down/right to swipe next
   const handleWheel = (e) => {
     if (isSwitchingRef.current || !joined) return;
 
-    // Accumulate deltaY
-    wheelAccumulator.current += e.deltaY;
+    // Accumulate maximum absolute displacement from both horizontal and vertical axes for maximum device support
+    wheelAccumulator.current += Math.max(Math.abs(e.deltaX), Math.abs(e.deltaY));
 
     if (wheelTimeout.current) clearTimeout(wheelTimeout.current);
 
@@ -86,7 +86,7 @@ const MeetingRoom = () => {
       wheelAccumulator.current = 0;
     }, 200);
 
-    // Trigger if cumulative scroll down is strong (displacement > 30)
+    // Trigger if cumulative scroll is strong (displacement > 30)
     if (wheelAccumulator.current > 30) {
       wheelAccumulator.current = 0;
       if (wheelTimeout.current) clearTimeout(wheelTimeout.current);
@@ -94,21 +94,21 @@ const MeetingRoom = () => {
     }
   };
 
-  // Handle mobile / tablet touch gesture swipe up or down to trigger next user
-  const touchStartY = useRef(0);
+  // Handle mobile / tablet touch gesture swipe left or right to trigger next user
+  const touchStartX = useRef(0);
   
   const handleTouchStart = (e) => {
     if (isSwitchingRef.current || !joined) return;
-    touchStartY.current = e.touches[0].clientY;
+    touchStartX.current = e.touches[0].clientX;
   };
 
   const handleTouchEnd = (e) => {
     if (isSwitchingRef.current || !joined) return;
-    const touchEndY = e.changedTouches[0].clientY;
-    const diffY = touchStartY.current - touchEndY;
+    const touchEndX = e.changedTouches[0].clientX;
+    const diffX = touchStartX.current - touchEndX;
     
-    // Support vertical skips with extremely light 50px threshold
-    if (Math.abs(diffY) > 50) {
+    // Support horizontal skips with a light 50px threshold (left/right swipe)
+    if (Math.abs(diffX) > 50) {
       triggerNextUser();
     }
   };
@@ -1185,6 +1185,17 @@ const MeetingRoom = () => {
     <div 
       className="h-screen max-h-screen bg-dark-bg text-white flex flex-col relative overflow-hidden"
     >
+      {/* Custom Ultra-Smooth Horizontal Bounce Keyframes */}
+      <style>{`
+        @keyframes bounce-x {
+          0%, 100% { transform: translateX(0); }
+          50% { transform: translateX(6px); }
+        }
+        .animate-bounce-x {
+          animation: bounce-x 1.5s infinite ease-in-out;
+        }
+      `}</style>
+
       {/* Knocking Request Popup Notification for Host */}
       {isHost && knockingRequests.length > 0 && (
         <div className="fixed top-6 right-6 z-50 w-80 bg-dark-card/95 border border-indigo-500/30 backdrop-blur-xl rounded-2xl p-4 shadow-[0_10px_30px_rgba(99,102,241,0.2)] animate-pulse">
@@ -1232,11 +1243,11 @@ const MeetingRoom = () => {
         {/* Dynamic Video Grid Area (WhatsApp PIP layout style) */}
         <div 
           id="video-grid-area"
-          className={`flex-grow flex-1 self-stretch relative flex items-center justify-center bg-[#060609] overflow-hidden transform transition-all duration-700 cubic-bezier(0.16, 1, 0.3, 1) ${isSwitching ? '-translate-y-full opacity-0 scale-95' : 'translate-y-0 opacity-100 scale-100'}`}
+          className={`flex-grow flex-1 self-stretch relative flex items-center justify-center bg-[#060609] overflow-hidden transform transition-all duration-700 cubic-bezier(0.16, 1, 0.3, 1) ${isSwitching ? '-translate-x-full opacity-0 scale-95' : 'translate-y-0 opacity-100 scale-100'}`}
         >
           {/* 100% Bulletproof Transparent Gesture Shield */}
           <div 
-            className="absolute inset-0 z-10 cursor-ns-resize pointer-events-auto bg-transparent"
+            className="absolute inset-0 z-10 cursor-ew-resize pointer-events-auto bg-transparent"
             onWheel={handleWheel}
             onTouchStart={handleTouchStart}
             onTouchEnd={handleTouchEnd}
@@ -1251,6 +1262,19 @@ const MeetingRoom = () => {
             <div className="absolute bottom-24 right-6 z-20 flex flex-col-reverse gap-3 pointer-events-none">
               {pipStreams.map(item => renderVideoCard(item, true))}
             </div>
+          )}
+
+          {/* 3. Floating Horizontal Premium Bouncing Skip Arrow (Clickable and Visually Pulsing on mobile and desktop) */}
+          {!isSwitching && !activeDrawer && (
+            <button
+              onClick={triggerNextUser}
+              className="absolute right-3 sm:right-6 top-1/2 -translate-y-1/2 z-30 w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-indigo-600 hover:bg-indigo-500 border border-indigo-400/30 text-white flex flex-col items-center justify-center shadow-[0_0_15px_rgba(99,102,241,0.4)] hover:shadow-[0_0_25px_rgba(99,102,241,0.6)] transition-all duration-300 active:scale-95 group cursor-pointer"
+              title="Swipe/Click to Connect with Next User"
+            >
+              <svg className="w-5 h-5 text-white animate-bounce-x" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
           )}
         </div>
 
@@ -1378,7 +1402,7 @@ const MeetingRoom = () => {
       </div>
 
       {/* 3. Bottom Control Navigation Bar */}
-      <div className="absolute bottom-0 left-0 right-0 h-20 bg-dark-card border-t border-dark-border flex items-center justify-between px-6 z-30">
+      <div className="absolute bottom-0 left-0 right-0 h-20 bg-dark-card border-t border-dark-border flex items-center justify-between px-3 sm:px-6 z-30">
         {/* Left: Meeting code identifier */}
         <div className="hidden sm:flex items-center space-x-3">
           <span className="text-sm font-semibold tracking-wider font-mono text-gray-400 bg-[#08080C] border border-dark-border px-3 py-1.5 rounded-lg select-all">
@@ -1387,7 +1411,7 @@ const MeetingRoom = () => {
         </div>
 
         {/* Center: WebRTC controls */}
-        <div className="flex items-center space-x-4 mx-auto sm:mx-0">
+        <div className="flex items-center space-x-2 sm:space-x-4 mx-auto sm:mx-0">
           {/* Mute toggle button */}
           <button
             onClick={handleToggleMic}
@@ -1445,7 +1469,7 @@ const MeetingRoom = () => {
         </div>
 
         {/* Right: Drawer slide triggers */}
-        <div className="hidden sm:flex items-center space-x-3">
+        <div className="flex items-center space-x-2 sm:space-x-3">
           <button
             onClick={() => setActiveDrawer(activeDrawer === 'participants' ? null : 'participants')}
             className={`p-2.5 rounded-lg border transition-all duration-300 ${activeDrawer === 'participants' ? 'bg-indigo-600/20 border-indigo-500/40 text-indigo-400' : 'bg-[#08080C] border-dark-border text-gray-400 hover:text-white'}`}

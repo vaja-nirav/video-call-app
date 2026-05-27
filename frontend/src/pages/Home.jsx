@@ -292,6 +292,17 @@ const Home = () => {
 
   return (
     <div className={`${isAuthenticated ? 'h-screen overflow-hidden' : 'min-h-screen'} bg-[#060609] text-gray-100 flex flex-col relative`}>
+      {/* Custom Ultra-Smooth Horizontal Bounce Keyframes */}
+      <style>{`
+        @keyframes bounce-x {
+          0%, 100% { transform: translateX(0); }
+          50% { transform: translateX(6px); }
+        }
+        .animate-bounce-x {
+          animation: bounce-x 1.5s infinite ease-in-out;
+        }
+      `}</style>
+
       {/* Background decoration glows */}
       <div className="absolute top-10 left-10 w-[400px] h-[400px] bg-indigo-900/5 rounded-full blur-[120px] pointer-events-none"></div>
       <div className="absolute bottom-10 right-10 w-[400px] h-[400px] bg-purple-900/5 rounded-full blur-[120px] pointer-events-none"></div>
@@ -354,10 +365,10 @@ const Home = () => {
             
             {/* Premium Vertical Snap-Scroll Feed Container */}
 
-            <div className="h-full overflow-y-scroll snap-y snap-mandatory scrollbar-none scroll-smooth">
+            <div className="h-full flex overflow-x-scroll snap-x snap-mandatory scrollbar-none scroll-smooth">
               {onlineUsers.length === 0 ? (
                 /* Empty Radar Pulse Searching Screen */
-                <div className="h-full snap-start flex flex-col justify-center items-center space-y-6 bg-[#060609] text-center p-6 relative">
+                <div className="h-full w-full flex-shrink-0 snap-start flex flex-col justify-center items-center space-y-6 bg-[#060609] text-center p-6 relative">
                   <div className="relative w-32 h-32 flex items-center justify-center">
                     <div className="absolute inset-0 rounded-full border border-indigo-500/10 animate-ping duration-[3s]"></div>
                     <div className="absolute inset-4 rounded-full border border-indigo-500/20 animate-pulse duration-[2s]"></div>
@@ -380,7 +391,7 @@ const Home = () => {
                 onlineUsers.map((item, index) => (
                   <div 
                     key={item.userId}
-                    className="h-full w-full snap-start flex flex-col justify-center items-center relative overflow-hidden bg-[#060609] px-4"
+                    className="flex-shrink-0 h-full w-full snap-start flex flex-col justify-center items-center relative overflow-hidden bg-[#060609] px-4"
                   >
                     {/* Decorative glowing mesh behind avatar */}
                     <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[350px] h-[350px] bg-gradient-to-tr from-indigo-500/5 to-purple-500/5 rounded-full blur-[90px] pointer-events-none"></div>
@@ -450,12 +461,24 @@ const Home = () => {
                       </div>
                     </div>
 
-                    {/* TikTok scroll down guide indicator */}
+                    {/* Floating Premium horizontal bounce skip indicator on right edge */}
                     {index < onlineUsers.length - 1 && (
-                      <div className="absolute bottom-6 flex flex-col items-center space-y-1 text-gray-600 animate-bounce">
-                        <span className="text-[9px] uppercase tracking-widest font-black">Scroll Down</span>
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+                      <div className="absolute right-4 sm:right-8 top-1/2 -translate-y-1/2 z-20 flex flex-col items-center space-y-1.5 text-indigo-400 pointer-events-none">
+                        <span className="hidden md:block text-[8px] uppercase tracking-widest font-black text-gray-500 rotate-90 origin-center translate-y-8 select-none">Swipe Left</span>
+                        <div className="w-11 h-11 rounded-full bg-indigo-600/10 border border-indigo-500/30 backdrop-blur-md flex items-center justify-center animate-bounce-x shadow-lg shadow-indigo-600/5">
+                          <svg className="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 5l7 7-7 7" />
+                          </svg>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* TikTok scroll right guide indicator at bottom */}
+                    {index < onlineUsers.length - 1 && (
+                      <div className="absolute bottom-6 flex items-center space-x-1.5 text-gray-500 animate-pulse pointer-events-none select-none bg-dark-bg/60 border border-dark-border/40 backdrop-blur-md px-3 py-1 rounded-full text-[9px] uppercase tracking-wider font-bold">
+                        <span>Swipe Left / Scroll Right</span>
+                        <svg className="w-3.5 h-3.5 animate-bounce-x" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 5l7 7-7 7" />
                         </svg>
                       </div>
                     )}
