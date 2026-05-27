@@ -907,10 +907,7 @@ const MeetingRoom = () => {
     setChatInput('');
   };
 
-  const handleLeaveMeeting = (voluntary = false) => {
-    if (voluntary) {
-      localStorage.setItem('meetsync_automatch', 'false');
-    }
+  const handleLeaveMeeting = () => {
     cleanUpStreams();
     disconnectSocket();
     navigate('/');
@@ -1436,7 +1433,7 @@ const MeetingRoom = () => {
           </button>
 
           <button
-            onClick={() => handleLeaveMeeting(true)}
+            onClick={handleLeaveMeeting}
             className="p-3.5 bg-red-600 hover:bg-red-500 text-white rounded-full transition-all duration-300 shadow-lg shadow-red-600/35 transform hover:scale-105 active:scale-95"
             title="Leave Meeting"
           >
@@ -1494,13 +1491,24 @@ const MeetingRoom = () => {
             </div>
             
             {/* Status Text */}
-            <div className="text-center space-y-2">
+            <div className="text-center space-y-2 flex flex-col items-center">
               <h3 className="text-xl font-bold tracking-wider text-white uppercase bg-clip-text text-transparent bg-gradient-to-r from-indigo-200 via-white to-purple-200">
                 Finding next user...
               </h3>
               <p className="text-xs text-indigo-400 font-semibold tracking-widest uppercase animate-pulse">
                 Connecting you to someone new...
               </p>
+
+              {/* Go to Home Page Button */}
+              <button
+                onClick={handleLeaveMeeting}
+                className="mt-6 px-6 py-2.5 bg-white/10 hover:bg-white/15 text-white border border-white/20 hover:border-white/30 rounded-xl font-medium text-sm transition-all duration-300 backdrop-blur-md flex items-center space-x-2 transform hover:scale-105 active:scale-95 shadow-lg shadow-black/20"
+              >
+                <svg className="w-4 h-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
+                </svg>
+                <span>Go to Home Page</span>
+              </button>
             </div>
           </div>
         </div>

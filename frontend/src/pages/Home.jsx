@@ -24,9 +24,7 @@ const Home = () => {
   const [chatInput, setChatInput] = useState('');
 
   // Auto-Match toggle state
-  const [autoMatch, setAutoMatch] = useState(() => {
-    return localStorage.getItem('meetsync_automatch') !== 'false';
-  });
+  const [autoMatch, setAutoMatch] = useState(true);
 
   const dispatch = useDispatch();
   const navigate = useNavigate();

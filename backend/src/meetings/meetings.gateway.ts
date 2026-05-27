@@ -84,6 +84,20 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
     
     if (session) {
       const { roomId, userId, name, participantId } = session;
+
+      // If it is an active matchmaking room, find the other participant in this room
+      // and register an immediate swiped partner protection so they do not instantly re-match each other on dashboard
+      if (roomId && roomId.startsWith('match-')) {
+        const otherParticipant = Array.from(this.socketRegistry.entries())
+          .find(([sid, s]) => s.roomId === roomId && sid !== client.id);
+        if (otherParticipant && userId && otherParticipant[1].userId) {
+          const idSelf = Number(userId);
+          const idPartner = Number(otherParticipant[1].userId);
+          this.immediateSwipedPartner.set(idSelf, idPartner);
+          this.immediateSwipedPartner.set(idPartner, idSelf);
+          console.log(`End Call cooldown registered: User ${idSelf} <-> User ${idPartner}`);
+        }
+      }
       
       // Remove from room in registry
       this.socketRegistry.delete(client.id);
