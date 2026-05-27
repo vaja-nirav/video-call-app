@@ -42,8 +42,11 @@ const MeetingRoom = () => {
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
 
-  // Clear unread message count when active drawer is set to chat (properly initialized)
+  const activeDrawerRef = useRef(null);
+
+  // Sync activeDrawerRef with activeDrawer state & reset unread count when chat is opened
   useEffect(() => {
+    activeDrawerRef.current = activeDrawer;
     if (activeDrawer === 'chat') {
       setUnreadMessages(0);
     }
@@ -52,12 +55,59 @@ const MeetingRoom = () => {
   // Dynamic WebRTC states
   const [peers, setPeers] = useState([]); // List of { socketId, name, stream, isMuted, isCameraOff, isHandRaised }
 
+  // WhatsApp PIP view states
+  const [fullscreenSocketId, setFullscreenSocketId] = useState('local');
+
+  // Handle double-clicking a video card to swap fullscreen / PIP view
+  const handleCardDoubleClick = (clickedSocketId) => {
+    if (clickedSocketId !== fullscreenSocketId) {
+      setFullscreenSocketId(clickedSocketId);
+    } else {
+      // If we double-click the fullscreen card, swap it back to the first available peer (or local if none)
+      if (clickedSocketId === 'local' && peers.length > 0) {
+        setFullscreenSocketId(peers[0].socketId);
+      } else {
+        setFullscreenSocketId('local');
+      }
+    }
+  };
+
+  // Automatically focus the first remote peer when they join, and default back to local if they leave
+  useEffect(() => {
+    if (peers.length > 0) {
+      if (fullscreenSocketId === 'local' || !peers.some(p => p.socketId === fullscreenSocketId)) {
+        setFullscreenSocketId(peers[0].socketId);
+      }
+    } else {
+      setFullscreenSocketId('local');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [peers]);
+
+  // Automatically sync local stream to the local video element whenever it mounts or updates
+  useEffect(() => {
+    if (localVideoRef.current) {
+      const activeStream = isScreenSharing ? screenStreamRef.current : localStreamRef.current;
+      if (activeStream && localVideoRef.current.srcObject !== activeStream) {
+        localVideoRef.current.srcObject = activeStream;
+      }
+    }
+  }, [cameraOn, isScreenSharing, joined]);
+
+  // Automatically scroll in-call chat to the bottom when new messages arrive or drawer opens
+  useEffect(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatMessages, activeDrawer]);
+
   // Refs for tracking streams and socket connections across renders
   const socketRef = useRef(null);
   const localStreamRef = useRef(null);
   const screenStreamRef = useRef(null);
   const peerConnectionsRef = useRef(new Map()); // socketId => RTCPeerConnection
   const localVideoRef = useRef(null);
+  const messagesEndRef = useRef(null);
   const joinedRef = useRef(false);
   const originalCameraStateRef = useRef(true); // Tracks camera status before screen sharing starts
 
@@ -415,6 +465,19 @@ const MeetingRoom = () => {
       isHandRaised: handRaised,
     });
 
+    // Clean any existing listeners to prevent duplicate event triggers (Strict Mode / React 18 friendly)
+    socket.off('knocking-request');
+    socket.off('users-in-room');
+    socket.off('user-joined');
+    socket.off('webrtc-offer');
+    socket.off('webrtc-answer');
+    socket.off('webrtc-ice-candidate');
+    socket.off('peer-toggle-mute');
+    socket.off('peer-toggle-camera');
+    socket.off('peer-raise-hand');
+    socket.off('message');
+    socket.off('user-left');
+
     // Listen for guest join requests (knocking) - only host receives this
     socket.on('knocking-request', ({ requesterSocketId, name }) => {
       console.log(`Knock request from ${name} (${requesterSocketId})`);
@@ -526,13 +589,13 @@ const MeetingRoom = () => {
     socket.on('message', (message) => {
       setChatMessages((prev) => [...prev, message]);
       
-      // Dynamically increment unread messages count if the chat window is closed
-      setActiveDrawer((currentDrawer) => {
-        if (currentDrawer !== 'chat') {
-          setUnreadMessages((prevUnread) => prevUnread );
-        }
-        return currentDrawer;
-      });
+      // Only increment unread badge if the message came from someone else and chat drawer is closed
+      const isMyMessage = message.senderName === displayName || 
+                          (user && message.userId === user.id);
+      
+      if (!isMyMessage && activeDrawerRef.current !== 'chat') {
+        setUnreadMessages((prevUnread) => prevUnread + 1);
+      }
     });
 
     // Event: User Left Room
@@ -785,14 +848,7 @@ const MeetingRoom = () => {
     }
   };
 
-  // 6. Dynamic Grid Layout Helper
-  const getGridClasses = (peerCount) => {
-    const totalTiles = peerCount + 1; // peers + self
-    if (totalTiles === 1) return 'grid-cols-1 max-w-3xl';
-    if (totalTiles === 2) return 'grid-cols-1 md:grid-cols-2 max-w-5xl';
-    if (totalTiles <= 4) return 'grid-cols-2 max-w-5xl';
-    return 'grid-cols-2 lg:grid-cols-3 max-w-6xl';
-  };
+  // Dynamic Grid Layout Helper removed (migrated to WhatsApp picture-in-picture layout)
 
   // LOBBY PREVIEW SCREEN RENDER (Only shown as fullscreen status for guests)
   if (!joined) {
@@ -866,9 +922,116 @@ const MeetingRoom = () => {
     );
   }
 
+  // Prepare all video stream sources for the call
+  const allStreams = [
+    {
+      socketId: 'local',
+      name: displayName || 'You',
+      isLocal: true,
+      isCameraOff: !cameraOn,
+      isMuted: !micOn,
+      isHandRaised: handRaised,
+      stream: isScreenSharing ? screenStreamRef.current : localStreamRef.current,
+      activeSpeakerKey: 'local'
+    },
+    ...peers.map(peer => ({
+      socketId: peer.socketId,
+      name: peer.name,
+      isLocal: false,
+      isCameraOff: peer.isCameraOff,
+      isMuted: peer.isMuted,
+      isHandRaised: peer.isHandRaised,
+      stream: peer.stream,
+      activeSpeakerKey: peer.socketId
+    }))
+  ];
+
+  const fullscreenStream = allStreams.find(item => item.socketId === fullscreenSocketId) || allStreams[0];
+  const pipStreams = allStreams.filter(item => item.socketId !== fullscreenStream.socketId);
+
+  // Helper to render video cards (custom WhatsApp layout)
+  const renderVideoCard = (item, isPip = false) => {
+    const isActiveSpeaker = activeSpeakers.has(item.activeSpeakerKey);
+    
+    return (
+      <div
+        key={item.socketId}
+        onDoubleClick={() => handleCardDoubleClick(item.socketId)}
+        className={isPip 
+          ? `w-40 xs:w-48 sm:w-56 aspect-video bg-dark-card border rounded-xl overflow-hidden shadow-2xl relative flex items-center justify-center cursor-pointer transition-all duration-300 hover:scale-[1.05] active:scale-95 pointer-events-auto z-20 ${isActiveSpeaker ? 'border-green-500 ring-2 ring-green-500/40 shadow-[0_0_15px_rgba(34,197,94,0.4)]' : 'border-dark-border'}`
+          : `w-full h-full absolute inset-0 z-0 bg-[#0c0c14] flex items-center justify-center transition-all duration-300 ${isActiveSpeaker ? 'ring-2 ring-green-500/20' : ''}`
+        }
+      >
+        {/* Remote audio tag (only for peers, regardless of whether PIP or fullscreen) */}
+        {!item.isLocal && item.stream && (
+          <audio
+            data-remote-audio="true"
+            ref={(el) => {
+              if (!el || !item.stream) return;
+              attachMediaStream(el, item.stream, true);
+              el.muted = false;
+              el.volume = 1;
+            }}
+            autoPlay
+            playsInline
+          />
+        )}
+
+        {/* Video stream rendering */}
+        {item.stream && !item.isCameraOff ? (
+          <video
+            ref={(el) => {
+              if (!el) return;
+              if (item.isLocal) {
+                localVideoRef.current = el;
+                const activeStream = isScreenSharing ? screenStreamRef.current : localStreamRef.current;
+                if (activeStream && el.srcObject !== activeStream) {
+                  el.srcObject = activeStream;
+                }
+              } else {
+                attachMediaStream(el, item.stream, false);
+              }
+            }}
+            autoPlay
+            playsInline
+            className={`w-full h-full object-cover ${item.isLocal && !isScreenSharing ? 'scale-x-[-1]' : ''}`}
+          />
+        ) : (
+          /* Fallback Avatar */
+          <div className={`rounded-full flex items-center justify-center font-bold uppercase transition-all duration-300 ${isPip ? 'w-12 h-12 text-sm bg-indigo-600/20 border border-indigo-500/30 text-indigo-400 font-mono' : 'w-24 h-24 text-4xl bg-indigo-600/10 border border-indigo-500/20 text-indigo-400 font-mono shadow-xl shadow-indigo-600/5'}`}>
+            {item.name?.slice(0, 2) || 'G'}
+          </div>
+        )}
+
+        {/* Status badges overlay */}
+        <div className="absolute top-3 left-3 bg-black/60 backdrop-blur-md border border-white/5 px-2 py-0.5 rounded text-[10px] font-semibold text-gray-200 z-10 flex items-center space-x-1.5">
+          {/* Pulsing Active Speaker dot */}
+          {isActiveSpeaker && <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>}
+          <span>{item.name} {item.isLocal ? '(You)' : ''}</span>
+        </div>
+
+        {/* Bottom indicators overlay */}
+        <div className="absolute bottom-3 right-3 flex items-center space-x-1.5 z-10">
+          {item.isMuted && (
+            <div className="p-1 bg-red-500/80 backdrop-blur-sm text-white rounded text-[10px]" title="Muted">
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+              </svg>
+            </div>
+          )}
+          {item.isHandRaised && (
+            <div className="p-1 bg-yellow-500 text-black font-bold rounded animate-bounce text-xs shadow-md" title="Hand Raised">
+              ✋
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   // ACTIVE CALL SCREEN RENDER
   return (
-    <div className="min-h-screen bg-dark-bg text-white flex flex-col relative overflow-hidden">
+    <div className="h-screen max-h-screen bg-dark-bg text-white flex flex-col relative overflow-hidden">
       {/* Knocking Request Popup Notification for Host */}
       {isHost && knockingRequests.length > 0 && (
         <div className="fixed top-6 right-6 z-50 w-80 bg-dark-card/95 border border-indigo-500/30 backdrop-blur-xl rounded-2xl p-4 shadow-[0_10px_30px_rgba(99,102,241,0.2)] animate-pulse">
@@ -913,121 +1076,17 @@ const MeetingRoom = () => {
           </button>
         )}
         
-        {/* Dynamic Video Grid Area */}
-        <div className="flex-grow flex items-center justify-center p-6 pb-24 overflow-y-auto">
-          <div className={`grid gap-4 w-full justify-center items-center ${getGridClasses(peers.length)}`}>
-            
-            {/* Self Video Box */}
-            <div className={`aspect-video bg-dark-card border rounded-2xl overflow-hidden shadow-xl relative flex items-center justify-center transition-all duration-300 ${activeSpeakers.has('local') ? 'border-green-500 ring-4 ring-green-500/40 shadow-[0_0_20px_rgba(34,197,94,0.4)] scale-[1.02]' : 'border-dark-border'}`}>
-              {cameraOn ? (
-                <video
-                  ref={(el) => {
-                    localVideoRef.current = el;
-                    if (el) {
-                      const activeStream = isScreenSharing ? screenStreamRef.current : localStreamRef.current;
-                      if (activeStream && el.srcObject !== activeStream) {
-                        el.srcObject = activeStream;
-                      }
-                    }
-                  }}
-                  autoPlay
-                  playsInline
-                  muted
-                  className={`w-full h-full object-cover ${isScreenSharing ? '' : 'scale-x-[-1]'}`}
-                />
-              ) : (
-                <div className="w-20 h-20 rounded-full bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400 text-2xl font-bold uppercase">
-                  {displayName?.slice(0, 2) || 'G'}
-                </div>
-              )}
-
-              {/* Status Badges */}
-              <div className="absolute top-4 left-4 bg-black/60 backdrop-blur-md border border-white/5 px-3 py-1 rounded-md text-xs font-semibold">
-                You {isScreenSharing ? '(Sharing Screen)' : ''}
-              </div>
-
-              <div className="absolute bottom-4 right-4 flex items-center space-x-2">
-                {!micOn && (
-                  <div className="p-1.5 bg-red-500 text-white rounded-md shadow-md" title="Muted">
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                    </svg>
-                  </div>
-                )}
-                {handRaised && (
-                  <div className="p-1 bg-yellow-500 text-black font-bold rounded-md animate-bounce text-sm shadow-md" title="Hand Raised">
-                    ✋
-                  </div>
-                )}
-              </div>
+        {/* Dynamic Video Grid Area (WhatsApp PIP layout style) */}
+        <div className="flex-grow flex-1 self-stretch relative flex items-center justify-center bg-[#060609] overflow-hidden">
+          {/* 1. Fullscreen Main Video */}
+          {fullscreenStream && renderVideoCard(fullscreenStream, false)}
+          
+          {/* 2. Floating Small PIP Cards (WhatsApp Style) */}
+          {pipStreams.length > 0 && (
+            <div className="absolute bottom-24 right-6 z-20 flex flex-col-reverse gap-3 pointer-events-none">
+              {pipStreams.map(item => renderVideoCard(item, true))}
             </div>
-
-            {/* Remote Peer Video Boxes */}
-            {peers.map((peer) => (
-              <div key={peer.socketId} className={`aspect-video bg-dark-card border rounded-2xl overflow-hidden shadow-xl relative flex items-center justify-center transition-all duration-300 ${activeSpeakers.has(peer.socketId) ? 'border-green-500 ring-4 ring-green-500/40 shadow-[0_0_20px_rgba(34,197,94,0.4)] scale-[1.02]' : 'border-dark-border'}`}>
-                
-                {/* Dedicated invisible audio player that is ALWAYS active and unmuted to play voice cleanly (explicitly bypassing browser suspensions) */}
-                {peer.stream && (
-                  <audio
-                    data-remote-audio="true"
-                    ref={(el) => {
-                      if (!el || !peer.stream) return;
-
-                      attachMediaStream(el, peer.stream, true);
-
-                      el.muted = false;
-                      el.volume = 1;
-                    }}
-                    autoPlay
-                    playsInline
-                  />
-                )}
-
-                {/* Video player for peer webcam (muted to prevent duplicate playback conflicts) */}
-                {peer.stream && !peer.isCameraOff && (
-                  <video
-                    ref={(el) => {
-                      if (!el || !peer.stream) return;
-
-                      attachMediaStream(el, peer.stream, false);
-                    }}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="w-full h-full object-cover"
-                  />
-                )}
-
-                {/* Show avatar fallback overlay when camera is off */}
-                {peer.isCameraOff && (
-                  <div className="w-20 h-20 rounded-full bg-purple-600/20 border border-purple-500/30 flex items-center justify-center text-purple-400 text-2xl font-bold uppercase">
-                    {peer.name?.slice(0, 2)}
-                  </div>
-                )}
-
-                {/* Status Badges */}
-                <div className="absolute top-4 left-4 bg-black/60 backdrop-blur-md border border-white/5 px-3 py-1 rounded-md text-xs font-semibold">
-                  {peer.name}
-                </div>
-
-                <div className="absolute bottom-4 right-4 flex items-center space-x-2">
-                  {peer.isMuted && (
-                    <div className="p-1.5 bg-red-500 text-white rounded-md shadow-md">
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                      </svg>
-                    </div>
-                  )}
-                  {peer.isHandRaised && (
-                    <div className="p-1 bg-yellow-500 text-black font-bold rounded-md animate-bounce text-sm shadow-md">
-                      ✋
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))}
-
-          </div>
+          )}
         </div>
 
         {/* 2. Side Panel Drawers (Chat / Participants) */}
@@ -1050,20 +1109,41 @@ const MeetingRoom = () => {
             {/* Chat Drawer content */}
             {activeDrawer === 'chat' && (
               <div className="flex-grow flex flex-col min-h-0">
-                <div className="flex-grow p-4 space-y-4 overflow-y-auto min-h-0">
-                  {chatMessages.map((msg, index) => (
-                    <div key={msg.id || index} className="space-y-1">
-                      <div className="flex items-baseline space-x-2">
-                        <span className="text-sm font-bold text-indigo-400">{msg.senderName}</span>
-                        <span className="text-[10px] text-gray-500">
-                          {new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                        </span>
+                <div className="flex-grow p-4 space-y-4 overflow-y-auto min-h-0 bg-[#07070a]">
+                  {chatMessages.map((msg, index) => {
+                    const isMyMessage = msg.senderName === displayName || 
+                                        msg.senderName === 'You' || 
+                                        (user && msg.userId === user.id);
+                    
+                    return (
+                      <div 
+                        key={msg.id || index} 
+                        className={`flex flex-col ${isMyMessage ? 'items-end' : 'items-start'} space-y-1 w-full`}
+                      >
+                        {/* Sender details and time */}
+                        <div className="flex items-center space-x-2 px-1 text-[10px] text-gray-400">
+                          {!isMyMessage && (
+                            <span className="font-bold text-indigo-400">{msg.senderName}</span>
+                          )}
+                          <span>
+                            {new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </div>
+
+                        {/* Chat bubble */}
+                        <div 
+                          className={`text-sm p-3 rounded-2xl max-w-[85%] break-words shadow-lg border transition-all duration-300 ${
+                            isMyMessage 
+                              ? 'bg-emerald-600/15 border-emerald-500/20 text-emerald-100 rounded-tr-sm shadow-emerald-950/10' 
+                              : 'bg-dark-card border-dark-border text-gray-200 rounded-tl-sm'
+                          }`}
+                        >
+                          <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
+                        </div>
                       </div>
-                      <p className="text-sm text-gray-200 bg-[#08080C] p-2.5 rounded-lg border border-dark-border inline-block break-words max-w-full">
-                        {msg.content}
-                      </p>
-                    </div>
-                  ))}
+                    );
+                  })}
+                  <div ref={messagesEndRef} />
                 </div>
 
                 <form onSubmit={handleSendMessage} className="p-4 border-t border-dark-border bg-dark-card flex items-center space-x-2">

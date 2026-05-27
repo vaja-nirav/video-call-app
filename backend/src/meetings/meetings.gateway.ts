@@ -284,22 +284,30 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
     const session = this.socketRegistry.get(client.id);
     if (session) {
       const { roomId, userId, name } = session;
+      let messageId = Math.floor(Math.random() * 1000000);
+      let createdAt = new Date();
 
-      // Persist the message in MySQL
-      const message = await this.meetingsService.saveMessage(
-        roomId,
-        userId,
-        name,
-        payload.content,
-      );
+      try {
+        // Persist the message in MySQL
+        const message = await this.meetingsService.saveMessage(
+          roomId,
+          userId,
+          name,
+          payload.content,
+        );
+        messageId = message.id;
+        createdAt = message.createdAt;
+      } catch (err) {
+        console.error('Failed to save chat message to DB, falling back to real-time socket transmission:', err);
+      }
 
       // Broadcast message to everyone in room (including sender)
       this.server.to(roomId).emit('message', {
-        id: message.id,
+        id: messageId,
         senderName: name,
         userId,
         content: payload.content,
-        createdAt: message.createdAt,
+        createdAt,
       });
     }
   }

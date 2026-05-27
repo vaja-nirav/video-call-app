@@ -59,6 +59,31 @@ export class MeetingsService {
 
   // Register a participant joining the meeting
   async addParticipant(meetingId: string, userId?: number, guestName?: string, role: string = 'PARTICIPANT') {
+    try {
+      const meetingExists = await this.prisma.meeting.findUnique({
+        where: { id: meetingId },
+      });
+
+      if (!meetingExists) {
+        console.log(`Meeting ${meetingId} not found in DB. Creating dynamically.`);
+        let hostId = userId || 1;
+        const hostUser = await this.prisma.user.findUnique({ where: { id: hostId } });
+        if (!hostUser) {
+          const firstUser = await this.prisma.user.findFirst();
+          hostId = firstUser ? firstUser.id : 1;
+        }
+        await this.prisma.meeting.create({
+          data: {
+            id: meetingId,
+            hostId,
+            title: 'Auto-Created Meeting Room',
+          },
+        });
+      }
+    } catch (err) {
+      console.error(`Failed to auto-create meeting room ${meetingId}:`, err);
+    }
+
     return this.prisma.participant.create({
       data: {
         meetingId,
