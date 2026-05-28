@@ -284,6 +284,21 @@ export class MeetingsGateway implements OnGatewayConnection, OnGatewayDisconnect
     }
   }
 
+  // Video Blur updates sync
+  @SubscribeMessage('toggle-video-blur')
+  handleToggleVideoBlur(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { roomId: string; isBlurred: boolean },
+  ) {
+    if (payload.roomId) {
+      client.to(payload.roomId).emit('peer-video-blur-toggled', {
+        socketId: client.id,
+        isBlurred: payload.isBlurred,
+      });
+      console.log(`Socket ${client.id} toggled video blur to ${payload.isBlurred} in room ${payload.roomId}`);
+    }
+  }
+
   // Hand Raise updates sync
   @SubscribeMessage('raise-hand')
   async handleRaiseHand(

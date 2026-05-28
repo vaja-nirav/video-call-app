@@ -55,6 +55,10 @@ const MeetingRoom = () => {
   // Dynamic WebRTC states
   const [peers, setPeers] = useState([]); // List of { socketId, name, stream, isMuted, isCameraOff, isHandRaised }
 
+  // Privacy blur states
+  const [isMyVideoBlurred, setIsMyVideoBlurred] = useState(false);
+  const [blurredPeers, setBlurredPeers] = useState({});
+
   // WhatsApp PIP view states
   const [fullscreenSocketId, setFullscreenSocketId] = useState('local');
 
@@ -72,6 +76,16 @@ const MeetingRoom = () => {
   useEffect(() => {
     setActiveRoomId(roomId);
   }, [roomId]);
+
+  // Sync video blur toggle state with backend
+  useEffect(() => {
+    if (socketRef.current && joined) {
+      socketRef.current.emit('toggle-video-blur', {
+        roomId: activeRoomId,
+        isBlurred: isMyVideoBlurred
+      });
+    }
+  }, [isMyVideoBlurred, joined, activeRoomId]);
 
   // Handle desktop scroll / wheel down/right to swipe next
   const handleWheel = (e) => {
@@ -137,6 +151,7 @@ const MeetingRoom = () => {
     setPeers([]);
     setUnreadMessages(0);
     setChatMessages([]);
+    setBlurredPeers({});
     
     // Emit NEXT_USER_REQUEST to server with payload matching STEP 2
     socketRef.current.emit('next-user-request', {
@@ -598,6 +613,7 @@ const MeetingRoom = () => {
     socket.off('peer-raise-hand');
     socket.off('message');
     socket.off('user-left');
+    socket.off('peer-video-blur-toggled');
 
     // Listen for guest join requests (knocking) - only host receives this
     socket.on('knocking-request', ({ requesterSocketId, name }) => {
@@ -705,6 +721,15 @@ const MeetingRoom = () => {
       setPeers((prev) =>
         prev.map((p) => (p.socketId === socketId ? { ...p, isHandRaised } : p))
       );
+    });
+
+    // Event: Peer toggled Video Blur
+    socket.on('peer-video-blur-toggled', ({ socketId, isBlurred }) => {
+      console.log(`Peer ${socketId} toggled video blur to ${isBlurred}`);
+      setBlurredPeers((prev) => ({
+        ...prev,
+        [socketId]: isBlurred,
+      }));
     });
 
     // Event: Real-time chat messages
@@ -909,6 +934,8 @@ const MeetingRoom = () => {
 
   const handleLeaveMeeting = () => {
     localStorage.setItem('meetsync_just_left_call', 'true');
+    setIsMyVideoBlurred(false);
+    setBlurredPeers({});
     cleanUpStreams();
     disconnectSocket();
     navigate('/');
@@ -1103,7 +1130,10 @@ const MeetingRoom = () => {
   // Helper to render video cards (custom WhatsApp layout)
   const renderVideoCard = (item, isPip = false) => {
     const isActiveSpeaker = activeSpeakers.has(item.activeSpeakerKey);
-    
+    const isPeerBlurred = !item.isLocal && blurredPeers[item.socketId];
+    const isLocalBlurred = item.isLocal && isMyVideoBlurred;
+    const isAnyBlurred = isPeerBlurred || isLocalBlurred;
+
     return (
       <div
         key={item.socketId}
@@ -1145,12 +1175,32 @@ const MeetingRoom = () => {
             }}
             autoPlay
             playsInline
-            className={`w-full h-full object-cover ${item.isLocal && !isScreenSharing ? 'scale-x-[-1]' : ''}`}
+            className={`w-full h-full object-cover transition-all duration-500 ${item.isLocal && !isScreenSharing ? 'scale-x-[-1]' : ''}`}
+            style={isAnyBlurred ? { filter: isLocalBlurred ? 'blur(6px) brightness(0.85)' : 'blur(30px) brightness(0.85)' } : {}}
           />
         ) : (
           /* Fallback Avatar */
           <div className={`rounded-full flex items-center justify-center font-bold uppercase transition-all duration-300 ${isPip ? 'w-12 h-12 text-sm bg-indigo-600/20 border border-indigo-500/30 text-indigo-400 font-mono' : 'w-24 h-24 text-4xl bg-indigo-600/10 border border-indigo-500/20 text-indigo-400 font-mono shadow-xl shadow-indigo-600/5'}`}>
             {item.name?.slice(0, 2) || 'G'}
+          </div>
+        )}
+
+        {/* Privacy Blur Overlay Screen */}
+        {isAnyBlurred && !item.isCameraOff && (
+          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-black/45 backdrop-blur-[2px] transition-all duration-500 text-center px-3 select-none pointer-events-none">
+            <div className={`rounded-full bg-indigo-600/90 border border-indigo-400/35 text-white flex items-center justify-center shadow-lg shadow-indigo-600/30 mb-2 animate-pulse ${isPip ? 'w-8 h-8' : 'w-12 h-12 sm:w-14 sm:h-14'}`}>
+              <svg className={isPip ? 'w-4 h-4' : 'w-6 h-6 sm:w-7 h-7'} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+              </svg>
+            </div>
+            <p className={`font-black tracking-wide text-white drop-shadow-md leading-tight ${isPip ? 'text-[9px]' : 'text-xs sm:text-sm'}`}>
+              {isLocalBlurred ? 'Video Blurred to Others' : 'Video Blurred for Privacy'}
+            </p>
+            {!isPip && (
+              <p className="text-[9px] sm:text-[10px] text-gray-300 font-medium mt-0.5 max-w-[180px] leading-tight">
+                {isLocalBlurred ? 'Your camera stream is securely hidden behind a private filter.' : `${item.name} turned on secure privacy blur.`}
+              </p>
+            )}
           </div>
         )}
 
@@ -1415,10 +1465,10 @@ const MeetingRoom = () => {
       </div>
 
       {/* 3. Bottom Control Navigation Bar */}
-      <div className="absolute bottom-0 left-0 right-0 h-20 bg-dark-card border-t border-dark-border flex items-center justify-between px-3 sm:px-6 z-30">
+      <div className="absolute bottom-0 left-0 right-0 h-20 bg-dark-card border-t border-dark-border flex items-center justify-center px-3 sm:px-6 z-30">
 
         {/* Center: WebRTC controls */}
-        <div className="flex items-center space-x-2 sm:space-x-4 mx-auto sm:mx-0">
+        <div className="flex items-center space-x-2 sm:space-x-4">
           {/* Mute toggle button */}
           <button
             onClick={handleToggleMic}
@@ -1431,7 +1481,8 @@ const MeetingRoom = () => {
               </svg>
             ) : (
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2M3 3l18 18M9 5a3 3 0 016 0v5a3 3 0 01-.124.845m-2.146 2.146A3 3 0 019 10v-1m9 2a7 7 0 01-11 5.83M12 18v4m0 0H8m4 0h4" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 3l18 18" />
               </svg>
             )}
           </button>
@@ -1448,7 +1499,28 @@ const MeetingRoom = () => {
               </svg>
             ) : (
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.25 2.25l19.5 19.5m-5.467-5.467L15 14m-3.5-3.5L3.75 3.75m12 6.553L21 8.618v6.764a1 1 0 01-.447.894l-2.053 1.026M15 14H5a2 2 0 00-2 2v2a2 2 0 002 2h8a2 2 0 002-2v-2c0-.528-.206-1.008-.541-1.364" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 3l18 18" />
+              </svg>
+            )}
+          </button>
+
+          {/* Privacy Blur toggle button */}
+          <button
+            onClick={() => setIsMyVideoBlurred(prev => !prev)}
+            className={`p-3.5 rounded-full transition-all duration-300 transform hover:scale-105 active:scale-95 ${isMyVideoBlurred ? 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/35 border border-indigo-400/30' : 'bg-dark-border hover:bg-dark-hover text-white'}`}
+            title={isMyVideoBlurred ? 'Remove Video Blur' : 'Blur My Video (Hide Face)'}
+          >
+            {isMyVideoBlurred ? (
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 3l18 18" />
+              </svg>
+            ) : (
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
               </svg>
             )}
           </button>
@@ -1476,8 +1548,8 @@ const MeetingRoom = () => {
         </div>
 
         {/* Right: Drawer slide triggers */}
-        <div className="flex items-center space-x-2 sm:space-x-3">
-          <button
+        <div className="absolute right-3 sm:right-6 flex items-center space-x-2 sm:space-x-3">
+          {/* <button
             onClick={() => setActiveDrawer(activeDrawer === 'participants' ? null : 'participants')}
             className={`p-2.5 rounded-lg border transition-all duration-300 ${activeDrawer === 'participants' ? 'bg-indigo-600/20 border-indigo-500/40 text-indigo-400' : 'bg-[#08080C] border-dark-border text-gray-400 hover:text-white'}`}
             title="Show Participants"
@@ -1485,7 +1557,7 @@ const MeetingRoom = () => {
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
             </svg>
-          </button>
+          </button> */}
 
           <button
             onClick={() => setActiveDrawer(activeDrawer === 'chat' ? null : 'chat')}
